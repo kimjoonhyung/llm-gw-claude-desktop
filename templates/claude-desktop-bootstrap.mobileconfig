@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.anthropic.claudefordesktop</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadIdentifier</key>
+            <string>com.example.claude-desktop-bootstrap.settings</string>
+            <key>PayloadUUID</key>
+            <string>671E8A16-6CA4-423C-83C9-B053FB47B4C5</string>
+            <key>PayloadDisplayName</key>
+            <string>Claude Desktop Bootstrap Settings</string>
+            <key>bootstrapEnabled</key>
+            <string>true</string>
+            <key>bootstrapUrl</key>
+            <string>https://{ALB_DNS}/portal/bootstrap</string>
+            <key>bootstrapOidc</key>
+            <string>{"issuer":"{OKTA_ISSUER}","clientId":"{NATIVE_CLIENT_ID}","redirectPort":8123,"scopes":"openid profile email offline_access"}</string>
+        </dict>
+    </array>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+    <key>PayloadIdentifier</key>
+    <string>com.example.claude-desktop-bootstrap</string>
+    <key>PayloadUUID</key>
+    <string>8855479B-D512-4FB4-9180-8F5260C364B1</string>
+    <key>PayloadDisplayName</key>
+    <string>Claude Desktop - LLM Gateway Bootstrap</string>
+    <key>PayloadDescription</key>
+    <string>Claude Desktop bootstrap: app signs in to Okta and receives gateway config automatically.</string>
+    <key>PayloadOrganization</key>
+    <string>{YOUR_ORG}</string>
+    <key>PayloadScope</key>
+    <string>System</string>
+</dict>
+</plist>
