@@ -119,6 +119,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if path == "/portal/cert":
             return _cert_response()
 
+        # Claude Desktop bootstrap: Okta 토큰 검증 후 사용자별 설정 JSON 반환
+        if path == "/portal/bootstrap":
+            return _handle_bootstrap(event)
+
         if path not in ("/portal", "/portal/"):
             return _redirect("/portal")
 
@@ -403,6 +407,112 @@ def _litellm_request(method: str, path: str, master_key: str, body: dict | None 
             pass
         logger.error("LiteLLM API 에러: %s %s -> %d %s", method, path, e.code, detail)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Claude Desktop Bootstrap (앱 네이티브 OIDC — 수동 키 입력 제거)
+# ---------------------------------------------------------------------------
+#
+# 앱이 bootstrapOidc(Okta PKCE)로 로그인 후, 액세스 토큰을 Bearer로 붙여
+# GET /portal/bootstrap 을 호출한다. 토큰을 검증하고 그 사용자의
+# Virtual Key가 포함된 설정 JSON을 반환한다 — 응답이 곧 앱의 유효 설정이 된다.
+#
+# 토큰 검증 (2단계):
+# 1. JWT 페이로드 사전 검사 — iss가 우리 Okta 테넌트, cid가 우리 Native App,
+#    exp 미경과인지 확인 (서명 검증 전 필터링)
+# 2. Okta /oauth2/v1/userinfo 호출 — Okta가 서버 측에서 서명/유효성을
+#    최종 검증하고 email 클레임을 반환 (Cognito 콜백과 동일한 패턴)
+
+def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
+    okta_issuer = os.environ.get("OKTA_ISSUER", "")
+    expected_client_id = os.environ.get("DESKTOP_OIDC_CLIENT_ID", "")
+    if not okta_issuer or not expected_client_id:
+        return _json_response(404, {"error": "bootstrap not enabled"})
+
+    headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    auth = headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return _json_response(401, {"error": "missing bearer token"})
+    token = auth[len("Bearer "):].strip()
+
+    # 1. 페이로드 사전 검사
+    claims = _decode_jwt_payload(token)
+    if claims is None:
+        return _json_response(401, {"error": "malformed token"})
+    if claims.get("iss") != okta_issuer:
+        logger.warning("bootstrap: issuer 불일치: %s", claims.get("iss"))
+        return _json_response(401, {"error": "invalid issuer"})
+    token_client = claims.get("cid") or claims.get("client_id") or claims.get("aud")
+    if expected_client_id not in (token_client if isinstance(token_client, list) else [token_client]):
+        logger.warning("bootstrap: client 불일치: %s", token_client)
+        return _json_response(401, {"error": "invalid client"})
+    if claims.get("exp") is not None and claims["exp"] < _now_epoch():
+        return _json_response(401, {"error": "token expired"})
+
+    # 2. Okta 서버 측 최종 검증 + email 획득
+    try:
+        userinfo = _fetch_okta_userinfo(okta_issuer, token)
+    except urllib.error.HTTPError as e:
+        logger.warning("bootstrap: userinfo 검증 실패: %d", e.code)
+        return _json_response(401, {"error": "token verification failed"})
+
+    email = (userinfo.get("email") or "").strip().lower()
+    if not email:
+        return _json_response(403, {"error": "email claim missing"})
+
+    logger.info("bootstrap 요청: email=%s", email)
+    virtual_key = _get_or_create_virtual_key(email)
+
+    # 응답 JSON = Claude Desktop의 유효 설정 (managed config 스키마)
+    gateway_url = os.environ.get("GATEWAY_URL", "").rstrip("/")
+    config = {
+        "inferenceProvider": "gateway",
+        "inferenceGatewayBaseUrl": gateway_url,
+        "inferenceCredentialKind": "apiKey",
+        "inferenceGatewayApiKey": virtual_key,
+        "inferenceGatewayAuthScheme": "bearer",
+        "inferenceModels": [
+            os.environ.get("MODEL_OPUS", ""),
+            os.environ.get("MODEL_SONNET", ""),
+            os.environ.get("MODEL_HAIKU", ""),
+        ],
+    }
+    return _json_response(200, config)
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
+    """JWT 페이로드를 서명 검증 없이 디코딩한다 (사전 필터링용 — 최종 검증은 userinfo)."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return None
+
+
+def _fetch_okta_userinfo(issuer: str, access_token: str) -> dict[str, Any]:
+    """Okta userinfo 호출. Okta가 토큰 서명/만료/폐기 여부를 서버 측에서 검증한다."""
+    req = urllib.request.Request(
+        f"{issuer}/oauth2/v1/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _now_epoch() -> int:
+    import time
+    return int(time.time())
+
+
+def _json_response(status_code: int, body: dict) -> dict[str, Any]:
+    return {
+        "statusCode": status_code,
+        "headers": {"Content-Type": "application/json", "Cache-Control": "no-store"},
+        "body": json.dumps(body),
+    }
 
 
 # ---------------------------------------------------------------------------

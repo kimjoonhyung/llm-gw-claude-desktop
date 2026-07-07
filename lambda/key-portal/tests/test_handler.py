@@ -3,6 +3,7 @@
 실행: python3 -m unittest discover -s lambda/key-portal/tests
 """
 
+import json
 import os
 import sys
 import unittest
@@ -20,6 +21,11 @@ TEST_ENV = {
     "LITELLM_MASTER_KEY_ARN": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:test",
     "GATEWAY_URL": "https://gateway.example.com",
     "AWS_DEFAULT_REGION": "ap-northeast-2",
+    "OKTA_ISSUER": "https://test-org.okta.com",
+    "DESKTOP_OIDC_CLIENT_ID": "0oaNATIVETEST",
+    "MODEL_OPUS": "global.anthropic.claude-opus-4-8",
+    "MODEL_SONNET": "global.anthropic.claude-sonnet-4-6",
+    "MODEL_HAIKU": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 with mock.patch.dict(os.environ, TEST_ENV):
@@ -185,6 +191,90 @@ class TestEnsureLitellmUser(unittest.TestCase):
     @mock.patch.object(handler, "_litellm_request", side_effect=RuntimeError("down"))
     def test_failure_does_not_block_key_issuance(self, mock_req):
         handler._ensure_litellm_user("master", "a@b.com")
+
+
+def _make_jwt(payload):
+    """서명 없는 테스트용 JWT (헤더.페이로드.가짜서명)"""
+    import base64 as b64
+    def enc(d):
+        return b64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+    return f"{enc({'alg':'RS256'})}.{enc(payload)}.fakesig"
+
+
+@_apply_env
+class TestBootstrap(unittest.TestCase):
+    def _bootstrap_event(self, token):
+        return {
+            "path": "/portal/bootstrap",
+            "headers": {"authorization": f"Bearer {token}", "host": PORTAL_HOST},
+        }
+
+    def _valid_claims(self, **overrides):
+        claims = {
+            "iss": "https://test-org.okta.com",
+            "cid": "0oaNATIVETEST",
+            "exp": 9999999999,
+        }
+        claims.update(overrides)
+        return claims
+
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-boot-key")
+    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "Boot@Example.com"})
+    def test_valid_token_returns_config_with_key(self, mock_userinfo, mock_key):
+        token = _make_jwt(self._valid_claims())
+        resp = handler.handler(self._bootstrap_event(token), None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        config = json.loads(resp["body"])
+        self.assertEqual(config["inferenceGatewayApiKey"], "sk-boot-key")
+        self.assertEqual(config["inferenceGatewayBaseUrl"], "https://gateway.example.com")
+        self.assertEqual(config["inferenceCredentialKind"], "apiKey")
+        self.assertEqual(len(config["inferenceModels"]), 3)
+        mock_key.assert_called_once_with("boot@example.com")
+
+    def test_missing_token_401(self):
+        resp = handler.handler({"path": "/portal/bootstrap", "headers": {}}, None)
+        self.assertEqual(resp["statusCode"], 401)
+
+    @mock.patch.object(handler, "_fetch_okta_userinfo")
+    def test_wrong_issuer_rejected_before_userinfo(self, mock_userinfo):
+        token = _make_jwt(self._valid_claims(iss="https://evil.okta.com"))
+        resp = handler.handler(self._bootstrap_event(token), None)
+        self.assertEqual(resp["statusCode"], 401)
+        mock_userinfo.assert_not_called()
+
+    @mock.patch.object(handler, "_fetch_okta_userinfo")
+    def test_wrong_client_rejected(self, mock_userinfo):
+        token = _make_jwt(self._valid_claims(cid="0oaOTHERAPP"))
+        resp = handler.handler(self._bootstrap_event(token), None)
+        self.assertEqual(resp["statusCode"], 401)
+        mock_userinfo.assert_not_called()
+
+    def test_expired_token_rejected(self):
+        token = _make_jwt(self._valid_claims(exp=1000000000))
+        resp = handler.handler(self._bootstrap_event(token), None)
+        self.assertEqual(resp["statusCode"], 401)
+
+    def test_malformed_token_rejected(self):
+        resp = handler.handler(self._bootstrap_event("not-a-jwt"), None)
+        self.assertEqual(resp["statusCode"], 401)
+
+    @mock.patch.object(handler, "_fetch_okta_userinfo", side_effect=__import__("urllib.error", fromlist=["HTTPError"]).HTTPError("u", 401, "bad", {}, None))
+    def test_userinfo_rejection_propagates_401(self, mock_userinfo):
+        token = _make_jwt(self._valid_claims())
+        resp = handler.handler(self._bootstrap_event(token), None)
+        self.assertEqual(resp["statusCode"], 401)
+
+    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"sub": "no-email"})
+    def test_missing_email_403(self, mock_userinfo):
+        token = _make_jwt(self._valid_claims())
+        resp = handler.handler(self._bootstrap_event(token), None)
+        self.assertEqual(resp["statusCode"], 403)
+
+    def test_disabled_when_env_missing(self):
+        with mock.patch.dict(os.environ, {"DESKTOP_OIDC_CLIENT_ID": ""}):
+            resp = handler.handler(self._bootstrap_event("any"), None)
+        self.assertEqual(resp["statusCode"], 404)
 
 
 @_apply_env

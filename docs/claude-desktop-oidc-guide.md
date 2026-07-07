@@ -3,9 +3,79 @@
 "Claude Desktop on 3P" 기능을 이용해, 사용자가 **키 입력 없이 Okta 로그인만으로**
 게이트웨이를 사용하는 구성입니다. 등록 페이지(Virtual Key) 방식과 병행 동작합니다.
 
-> 상태: Claude Desktop on 3P는 2026-07 기준 베타 → GA 직후 단계입니다.
-> 파일럿 그룹으로 실증 후 확산을 권장합니다. 앱 버전 1.6889.0+ 필요.
-> 공식 문서: https://claude.com/docs/cowork/3p/gateway
+> 상태: Claude Desktop on 3P는 베타이며, 공식 문서에 "General availability is
+> targeted for July 9, 2026"으로 명시되어 있습니다 (claude.com/docs/cowork/3p/overview).
+> 파일럿 그룹으로 실증 후 확산을 권장합니다.
+> 버전 요건: OIDC는 1.6889.0+, Bootstrap은 1.10270.0+.
+> 공식 문서: https://claude.com/docs/cowork/3p/gateway ,
+> https://claude.com/docs/third-party/claude-desktop/bootstrap
+
+## 두 가지 구현 경로
+
+| | A안 — Bootstrap (권장, 구현됨) | B안 — 정적 OIDC 프로파일 |
+|---|---|---|
+| 배포물 | bootstrap URL만 담긴 최소 `.reg` (전 PC 동일) | 전체 설정 담긴 `.reg` |
+| 추론 인증 | Virtual Key (서버가 자동 발급·주입) | 매 요청 Okta JWT |
+| 게이트웨이 설정 | 변경 불필요 (기존 Virtual Key 체계) | LiteLLM `enable_jwt_auth` 필요 |
+| 사용자별 차등 | 가능 (서버가 사용자별 응답) | 불가 |
+| 설정 변경 시 | 서버만 수정 | 전 PC 재배포 |
+
+**A안**은 이 저장소의 `/portal/bootstrap` 엔드포인트로 구현되어 있습니다.
+**B안**용 LiteLLM JWT 인증도 `-c desktopOidcClientId=...` 배포 시 함께 활성화됩니다.
+
+---
+
+# A안 — Bootstrap 방식 (구현 완료)
+
+## 사용자 경험
+
+앱 실행 → 브라우저에 Okta 로그인 → 끝. 키 복사/설정 편집 없음.
+앱이 Okta 토큰으로 `/portal/bootstrap`을 호출하면, 서버가 그 사용자의
+Virtual Key가 포함된 설정 JSON을 반환하고 앱이 이를 그대로 적용합니다.
+
+## 1. Okta Native App 생성 (아래 B안 1단계와 동일한 앱 재사용)
+
+## 2. 게이트웨이 재배포
+
+```bash
+npx cdk deploy LlmGatewayStackV2 \
+  ... 기존 컨텍스트 ... \
+  -c desktopOidcClientId={Native App Client ID}
+```
+
+`/portal/bootstrap`이 활성화됩니다 (미지정 시 404).
+
+## 3. Windows `.reg` 배포 (전 PC 동일 파일 1개)
+
+```reg
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude]
+"bootstrapEnabled"="true"
+"bootstrapUrl"="https://{ALB_DNS}/portal/bootstrap"
+"bootstrapOidc"="{\"issuer\":\"https://{your-org}.okta.com\",\"clientId\":\"{Native App Client ID}\",\"redirectPort\":8123,\"scopes\":\"openid profile email offline_access\"}"
+```
+
+주의:
+- 모든 값은 REG_SZ 문자열. 객체(`bootstrapOidc`)는 JSON을 이스케이프한 단일 문자열
+  (하위 키로 쪼개면 안 됨 — 공식 문서가 경고하는 최다 실수)
+- HKLM은 관리자 권한 필요. 사용자 자율 설치면 HKEY_CURRENT_USER 사용
+- 자체서명 인증서면 같은 스크립트에서 인증서 신뢰 설치를 먼저 수행
+- 앱은 시작 시 1회 설정을 읽으므로 배포 후 완전 재시작 필요
+
+## 4. 서버 측 토큰 검증 방식
+
+`/portal/bootstrap`은 2단계로 검증합니다:
+1. JWT 페이로드 사전 검사 — issuer가 우리 Okta 테넌트, client가 우리 Native App,
+   만료 미경과 (서명 검증 전 필터)
+2. Okta `/oauth2/v1/userinfo` 호출 — Okta가 서버 측에서 서명·유효성을 최종 검증
+
+응답 JSON에는 `inferenceGatewayBaseUrl`, 사용자별 `inferenceGatewayApiKey`(Virtual Key),
+`inferenceModels`가 포함됩니다. 키 발급·예산·오프보딩은 등록 페이지와 동일 체계입니다.
+
+---
+
+# B안 — 정적 프로파일 + inferenceGatewayOidc
 
 ## 두 방식 비교
 

@@ -116,6 +116,9 @@ export class PortalStack extends cdk.NestedStack {
         MODEL_OPUS: props.models.opus,
         MODEL_SONNET: props.models.sonnet,
         MODEL_HAIKU: props.models.haiku,
+        // Claude Desktop bootstrap (/portal/bootstrap) — 둘 다 있어야 활성화
+        OKTA_ISSUER: props.oktaIssuer,
+        DESKTOP_OIDC_CLIENT_ID: this.node.tryGetContext('desktopOidcClientId') || '',
       },
     });
 
