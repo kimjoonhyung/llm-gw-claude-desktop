@@ -16,12 +16,12 @@
 |---|---|---|
 | 배포물 | bootstrap URL만 담긴 최소 `.reg` (전 PC 동일) | 전체 설정 담긴 `.reg` |
 | 추론 인증 | Virtual Key (서버가 자동 발급·주입) | 매 요청 Okta JWT |
-| 게이트웨이 설정 | 변경 불필요 (기존 Virtual Key 체계) | LiteLLM `enable_jwt_auth` 필요 |
+| 게이트웨이 설정 | 변경 불필요 (기존 Virtual Key 체계) | LiteLLM `enable_jwt_auth` — **Enterprise 전용** |
 | 사용자별 차등 | 가능 (서버가 사용자별 응답) | 불가 |
 | 설정 변경 시 | 서버만 수정 | 전 PC 재배포 |
 
 **A안**은 이 저장소의 `/portal/bootstrap` 엔드포인트로 구현되어 있습니다.
-**B안**용 LiteLLM JWT 인증도 `-c desktopOidcClientId=...` 배포 시 함께 활성화됩니다.
+**B안**(LiteLLM 직접 JWT 인증)은 LiteLLM **Enterprise 전용 기능**으로 확인되어(OSS에서 켜면 전체 인증이 차단됨), 이 저장소는 A안만 지원합니다.
 
 ---
 

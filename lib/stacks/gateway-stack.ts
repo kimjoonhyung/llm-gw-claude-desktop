@@ -101,22 +101,11 @@ export class GatewayStack extends cdk.NestedStack {
     // /v1/messages 요청의 모델명을 model_list로 매핑해 Bedrock으로 라우팅한다.
     const { opus, sonnet, haiku } = props.models;
 
-    // Claude Desktop 앱 네이티브 OIDC(JWT) 인증 — oktaIssuer + desktopOidcClientId 지정 시 활성화
-    const useJwtAuth = !!(props.oktaIssuer && props.desktopOidcClientId);
-    const jwtAuthLines = useJwtAuth
-      ? [
-          '  enable_jwt_auth: true',
-          '  litellm_jwtauth:',
-          // Okta org authorization server의 JWKS 엔드포인트
-          `    public_key_url: ${props.oktaIssuer}/oauth2/v1/keys`,
-          // audience 미지정 시 테넌트의 아무 토큰이나 통과하므로 반드시 고정
-          `    audience: ${props.desktopOidcClientId}`,
-          '    user_id_jwt_field: email',
-          '    user_email_jwt_field: email',
-          // 첫 JWT 호출 시 LiteLLM Internal User 자동 생성 (포털 JIT와 동일 효과)
-          '    user_id_upsert: true',
-        ]
-      : [];
+    // 주의: LiteLLM의 enable_jwt_auth(직접 JWT 인증, B안)는 Enterprise 전용 기능이다.
+    // OSS 버전에서 켜면 모든 인증이 "enterprise only feature" 에러로 차단된다 (실측 확인).
+    // Claude Desktop 앱 네이티브 OIDC는 bootstrap 방식(A안)으로 지원한다:
+    // 포털 Lambda(/portal/bootstrap)가 Okta 토큰을 검증하고 Virtual Key를 내려주므로
+    // LiteLLM 쪽 변경이 전혀 필요 없다. desktopOidcClientId는 Lambda에만 전달된다.
 
     const litellmConfig = [
       'model_list:',
@@ -140,7 +129,6 @@ export class GatewayStack extends cdk.NestedStack {
       'general_settings:',
       '  master_key: os.environ/LITELLM_MASTER_KEY',
       '  database_url: os.environ/DATABASE_URL',
-      ...jwtAuthLines,
     ].join('\n');
 
     // --- Container ---
