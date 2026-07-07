@@ -12,8 +12,16 @@ import { Construct } from 'constructs';
 import { PROJECT_NAME, BUDGET, ModelIds } from '../config/constants';
 
 export interface PortalStackProps {
-  /** Okta OIDC 연동 정보. 비어 있으면 Cognito 자체 사용자 풀로 동작 (테스트용) */
+  /** Okta 테넌트 issuer URL — bootstrap 토큰 검증 및 (웹 포털 사용 시) Cognito IdP 연동에 사용 */
   oktaIssuer: string;
+  /**
+   * 웹 포털(백업 플랜) 활성화 여부.
+   * 주력 경로는 Claude Desktop bootstrap(앱 네이티브 OIDC)이며 Cognito가 필요 없다.
+   * bootstrap 미지원 환경(구버전 앱, Claude Code CLI 등)을 위한 브라우저 키 발급이
+   * 필요할 때만 true — Cognito User Pool + Hosted UI + Okta Web App 연동이 생성된다.
+   */
+  enableWebPortal: boolean;
+  /** 웹 포털용 Okta Web App 자격증명 (enableWebPortal=true일 때만 사용) */
   oktaClientId: string;
   oktaClientSecret: string;
   models: ModelIds;
@@ -21,7 +29,7 @@ export interface PortalStackProps {
   vpc: ec2.IVpc;
   lambdaSg: ec2.ISecurityGroup;
   /**
-   * 포털을 노출할 ALB 리스너와 base URL.
+   * 포털 Lambda를 노출할 ALB 리스너와 base URL.
    * 공개 Function URL(Principal:* 정책)은 보안 스캐너에 차단되므로
    * ALB 경로 라우팅(/portal)으로 노출한다 — allowedCidrs 제한도 함께 적용됨.
    */
@@ -32,19 +40,20 @@ export interface PortalStackProps {
 /**
  * Self-Service Key Portal
  *
- * 일반 사용자(Claude Desktop/Code)가 AWS CLI 없이 브라우저에서
- * Okta 로그인만으로 LiteLLM Virtual Key를 발급받는 포털.
+ * 주력 경로 — Claude Desktop bootstrap (앱 네이티브 OIDC):
+ *   앱이 Okta에 직접 PKCE 로그인 → GET /portal/bootstrap (Bearer: Okta 토큰)
+ *     → Lambda가 Okta 토큰 검증 → Virtual Key 포함 설정 JSON 반환 → 앱이 자동 적용
+ *   사용자는 키를 보지도 입력하지도 않는다. Cognito 불필요.
  *
- * 흐름:
- *   사용자 브라우저 → 포털 URL → Cognito Hosted UI → Okta(OIDC) 로그인
- *     → 포털 Lambda가 인증 코드를 토큰으로 교환 (Cognito가 AWS 측 인증을 담당)
- *     → 이메일 기반으로 LiteLLM Virtual Key 조회/자동생성 (기존 apiKeyHelper 로직의 클라우드 버전)
- *     → 인증된 세션 화면에 Virtual Key + 설정 가이드 표시 (이메일 발송 불필요)
+ * 백업 플랜 — 웹 포털 (enableWebPortal=true 시에만 생성):
+ *   브라우저 → /portal → Cognito Hosted UI → Okta 로그인 → 키 화면 표시/복사
+ *   bootstrap 미지원 환경(구버전 앱, Claude Code CLI)용.
  */
 export class PortalStack extends cdk.NestedStack {
   public readonly portalFunction: lambda.Function;
   public readonly portalUrl: string;
-  public readonly userPool: cognito.UserPool;
+  /** 웹 포털(백업 플랜) 활성화 시에만 생성 */
+  public readonly userPool?: cognito.UserPool;
   /** Okta Event Hook 수신 Lambda (자동 오프보딩) */
   public readonly oktaEventsFunction: lambda.Function;
   public readonly oktaEventsWebhookSecret: secretsmanager.Secret;
@@ -52,45 +61,48 @@ export class PortalStack extends cdk.NestedStack {
   constructor(scope: Construct, id: string, props: PortalStackProps) {
     super(scope, id);
 
-    // --- Cognito User Pool ---
-    this.userPool = new cognito.UserPool(this, 'UserPool', {
-      userPoolName: `${PROJECT_NAME}-portal`,
-      selfSignUpEnabled: false,
-      signInAliases: { email: true },
-      standardAttributes: {
-        email: { required: true, mutable: true },
-      },
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // Hosted UI 도메인 (전역 고유 프리픽스 필요)
-    const domainPrefix = `${PROJECT_NAME}-${this.account}`;
-    this.userPool.addDomain('Domain', {
-      cognitoDomain: { domainPrefix },
-    });
-    const cognitoDomainUrl = `https://${domainPrefix}.auth.${this.region}.amazoncognito.com`;
-
-    // --- Okta OIDC IdP (설정된 경우에만) ---
-    const useOkta = !!(props.oktaIssuer && props.oktaClientId && props.oktaClientSecret);
+    // --- 웹 포털용 Cognito (백업 플랜, 옵션) ---
+    let cognitoDomainUrl = '';
     let oktaProvider: cognito.UserPoolIdentityProviderOidc | undefined;
-    if (useOkta) {
-      oktaProvider = new cognito.UserPoolIdentityProviderOidc(this, 'OktaIdp', {
-        userPool: this.userPool,
-        name: 'Okta',
-        issuerUrl: props.oktaIssuer,
-        clientId: props.oktaClientId,
-        clientSecret: props.oktaClientSecret,
-        scopes: ['openid', 'email', 'profile'],
-        attributeMapping: {
-          email: cognito.ProviderAttribute.other('email'),
-          fullname: cognito.ProviderAttribute.other('name'),
+    let useOkta = false;
+    if (props.enableWebPortal) {
+      this.userPool = new cognito.UserPool(this, 'UserPool', {
+        userPoolName: `${PROJECT_NAME}-portal`,
+        selfSignUpEnabled: false,
+        signInAliases: { email: true },
+        standardAttributes: {
+          email: { required: true, mutable: true },
         },
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
-    } else {
-      cdk.Annotations.of(this).addWarning(
-        'Okta 연동 정보(oktaIssuer/oktaClientId/oktaClientSecret)가 없어 Cognito 자체 사용자 풀로 배포됩니다. ' +
-        '프로덕션에서는 -c oktaIssuer=... -c oktaClientId=... -c oktaClientSecret=... 을 지정하세요.',
-      );
+
+      // Hosted UI 도메인 (전역 고유 프리픽스 필요)
+      const domainPrefix = `${PROJECT_NAME}-${this.account}`;
+      this.userPool.addDomain('Domain', {
+        cognitoDomain: { domainPrefix },
+      });
+      cognitoDomainUrl = `https://${domainPrefix}.auth.${this.region}.amazoncognito.com`;
+
+      useOkta = !!(props.oktaIssuer && props.oktaClientId && props.oktaClientSecret);
+      if (useOkta) {
+        oktaProvider = new cognito.UserPoolIdentityProviderOidc(this, 'OktaIdp', {
+          userPool: this.userPool,
+          name: 'Okta',
+          issuerUrl: props.oktaIssuer,
+          clientId: props.oktaClientId,
+          clientSecret: props.oktaClientSecret,
+          scopes: ['openid', 'email', 'profile'],
+          attributeMapping: {
+            email: cognito.ProviderAttribute.other('email'),
+            fullname: cognito.ProviderAttribute.other('name'),
+          },
+        });
+      } else {
+        cdk.Annotations.of(this).addWarning(
+          '웹 포털이 Okta 연동 정보 없이 활성화되어 Cognito 자체 사용자 풀로 배포됩니다 (테스트 전용). ' +
+          '프로덕션에서는 -c oktaClientId=... -c oktaClientSecret=... 을 함께 지정하세요.',
+        );
+      }
     }
 
     // --- Portal Lambda ---
@@ -116,9 +128,11 @@ export class PortalStack extends cdk.NestedStack {
         MODEL_OPUS: props.models.opus,
         MODEL_SONNET: props.models.sonnet,
         MODEL_HAIKU: props.models.haiku,
-        // Claude Desktop bootstrap (/portal/bootstrap) — 둘 다 있어야 활성화
+        // 주력: Claude Desktop bootstrap (/portal/bootstrap) — 둘 다 있어야 활성화
         OKTA_ISSUER: props.oktaIssuer,
         DESKTOP_OIDC_CLIENT_ID: this.node.tryGetContext('desktopOidcClientId') || '',
+        // 백업: 웹 포털(브라우저 키 발급) 활성화 여부
+        WEB_PORTAL_ENABLED: props.enableWebPortal ? 'true' : '',
       },
     });
 
@@ -140,44 +154,46 @@ export class PortalStack extends cdk.NestedStack {
     });
     this.portalUrl = portalUrl;
 
-    // --- Cognito App Client (포털용, Authorization Code Flow) ---
-    // 주의: Lambda 환경변수에 client ID/secret을 직접 넣으면
-    // Lambda -> Client -> Function URL(callback) -> Lambda 순환 참조가 생긴다.
-    // Lambda가 런타임에 Cognito API로 client 설정을 조회하도록 하여 사이클을 끊는다.
-    const clientName = `${PROJECT_NAME}-portal-client`;
-    const appClient = this.userPool.addClient('PortalClient', {
-      userPoolClientName: clientName,
-      generateSecret: true,
-      oAuth: {
-        flows: { authorizationCodeGrant: true },
-        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
-        callbackUrls: [portalUrl],
-        logoutUrls: [portalUrl],
-      },
-      supportedIdentityProviders: useOkta
-        ? [cognito.UserPoolClientIdentityProvider.custom('Okta')]
-        : [cognito.UserPoolClientIdentityProvider.COGNITO],
-      preventUserExistenceErrors: true,
-    });
-    if (oktaProvider) {
-      appClient.node.addDependency(oktaProvider);
+    // --- 웹 포털용 Cognito App Client (백업 플랜, 옵션) ---
+    if (props.enableWebPortal && this.userPool) {
+      // 주의: Lambda 환경변수에 client ID/secret을 직접 넣으면
+      // Lambda -> Client -> callback URL -> Lambda 순환 참조가 생긴다.
+      // Lambda가 런타임에 Cognito API로 client 설정을 조회하도록 하여 사이클을 끊는다.
+      const clientName = `${PROJECT_NAME}-portal-client`;
+      const appClient = this.userPool.addClient('PortalClient', {
+        userPoolClientName: clientName,
+        generateSecret: true,
+        oAuth: {
+          flows: { authorizationCodeGrant: true },
+          scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+          callbackUrls: [portalUrl],
+          logoutUrls: [portalUrl],
+        },
+        supportedIdentityProviders: useOkta
+          ? [cognito.UserPoolClientIdentityProvider.custom('Okta')]
+          : [cognito.UserPoolClientIdentityProvider.COGNITO],
+        preventUserExistenceErrors: true,
+      });
+      if (oktaProvider) {
+        appClient.node.addDependency(oktaProvider);
+      }
+
+      // Lambda 환경변수 (순환 참조가 없는 값만)
+      this.portalFunction.addEnvironment('COGNITO_DOMAIN', cognitoDomainUrl);
+      this.portalFunction.addEnvironment('USER_POOL_ID', this.userPool.userPoolId);
+      this.portalFunction.addEnvironment('COGNITO_CLIENT_NAME', clientName);
+      this.portalFunction.addEnvironment('IDP_NAME', useOkta ? 'Okta' : '');
+
+      // 런타임 client ID/secret 조회 권한
+      this.portalFunction.addToRolePolicy(new iam.PolicyStatement({
+        sid: 'CognitoClientLookup',
+        actions: [
+          'cognito-idp:ListUserPoolClients',
+          'cognito-idp:DescribeUserPoolClient',
+        ],
+        resources: [this.userPool.userPoolArn],
+      }));
     }
-
-    // Lambda 환경변수 (순환 참조가 없는 값만)
-    this.portalFunction.addEnvironment('COGNITO_DOMAIN', cognitoDomainUrl);
-    this.portalFunction.addEnvironment('USER_POOL_ID', this.userPool.userPoolId);
-    this.portalFunction.addEnvironment('COGNITO_CLIENT_NAME', clientName);
-    this.portalFunction.addEnvironment('IDP_NAME', useOkta ? 'Okta' : '');
-
-    // 런타임 client ID/secret 조회 권한
-    this.portalFunction.addToRolePolicy(new iam.PolicyStatement({
-      sid: 'CognitoClientLookup',
-      actions: [
-        'cognito-idp:ListUserPoolClients',
-        'cognito-idp:DescribeUserPoolClient',
-      ],
-      resources: [this.userPool.userPoolArn],
-    }));
 
     // --- Okta Event Hook: 자동 오프보딩 (SCIM deprovisioning 대체) ---
     // Okta가 인터넷에서 호출해야 하므로 CIDR 제한된 ALB가 아닌 API Gateway로 노출.
@@ -228,7 +244,10 @@ export class PortalStack extends cdk.NestedStack {
     hookResource.addMethod('POST', integration);  // 이벤트 수신
 
     // --- Outputs ---
-    new cdk.CfnOutput(this, 'PortalUrl', { value: portalUrl });
+    new cdk.CfnOutput(this, 'BootstrapUrl', {
+      value: `${portalUrl}/bootstrap`,
+      description: 'Claude Desktop bootstrapUrl (주력 경로 — templates/claude-desktop-bootstrap.reg 참고)',
+    });
     new cdk.CfnOutput(this, 'OktaEventHookUrl', {
       value: `${eventsApi.url}okta-events`,
       description: 'Okta Admin > Workflow > Event Hooks에 등록할 URL',
@@ -237,10 +256,16 @@ export class PortalStack extends cdk.NestedStack {
       value: this.oktaEventsWebhookSecret.secretArn,
       description: 'Okta Event Hook의 Authorization 헤더 값 (Secrets Manager에서 조회)',
     });
-    new cdk.CfnOutput(this, 'CognitoDomain', { value: cognitoDomainUrl });
-    new cdk.CfnOutput(this, 'OktaRedirectUri', {
-      value: `${cognitoDomainUrl}/oauth2/idpresponse`,
-      description: 'Okta OIDC App의 Sign-in redirect URI에 등록할 값',
-    });
+    if (props.enableWebPortal) {
+      new cdk.CfnOutput(this, 'PortalUrl', {
+        value: portalUrl,
+        description: '웹 포털 (백업 플랜 — 브라우저 키 발급)',
+      });
+      new cdk.CfnOutput(this, 'CognitoDomain', { value: cognitoDomainUrl });
+      new cdk.CfnOutput(this, 'OktaRedirectUri', {
+        value: `${cognitoDomainUrl}/oauth2/idpresponse`,
+        description: '웹 포털용 Okta Web App의 Sign-in redirect URI에 등록할 값',
+      });
+    }
   }
 }

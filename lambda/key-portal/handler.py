@@ -126,6 +126,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if path not in ("/portal", "/portal/"):
             return _redirect("/portal")
 
+        # 웹 포털(브라우저 키 발급)은 백업 플랜 — 비활성 시 안내만 표시
+        if not os.environ.get("WEB_PORTAL_ENABLED"):
+            return _html_response(200, _bootstrap_info_page())
+
         code = params.get("code")
         if not code:
             return _start_login(event)
@@ -670,6 +674,20 @@ function copyText(id) {{
 </script>
 </body>
 </html>"""
+
+
+def _bootstrap_info_page() -> str:
+    """웹 포털 비활성 시 안내 페이지 — 주력 경로(Claude Desktop 자동 설정)를 안내한다."""
+    return """<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<title>LLM Gateway</title></head>
+<body style="font-family:sans-serif;max-width:640px;margin:60px auto;">
+<h2>LLM Gateway</h2>
+<p>이 게이트웨이는 <b>Claude Desktop 자동 설정(bootstrap)</b> 방식으로 운영됩니다.</p>
+<p>IT 부서가 배포한 구성이 적용된 PC에서 Claude Desktop을 실행하고
+회사 계정(Okta)으로 로그인하면 자동으로 연결됩니다 — 별도의 키 발급이 필요 없습니다.</p>
+<p>문제가 있으면 관리자에게 문의하세요.</p>
+</body></html>"""
 
 
 def _error_page(message: str) -> str:

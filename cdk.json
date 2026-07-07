@@ -26,8 +26,9 @@
     "certificateArn": "",
     "allowedCidrs": "",
     "oktaIssuer": "",
+    "desktopOidcClientId": "",
+    "enableWebPortal": "",
     "oktaClientId": "",
-    "oktaClientSecret": "",
-    "desktopOidcClientId": ""
+    "oktaClientSecret": ""
   }
 }

@@ -23,6 +23,7 @@ TEST_ENV = {
     "AWS_DEFAULT_REGION": "ap-northeast-2",
     "OKTA_ISSUER": "https://test-org.okta.com",
     "DESKTOP_OIDC_CLIENT_ID": "0oaNATIVETEST",
+    "WEB_PORTAL_ENABLED": "true",
     "MODEL_OPUS": "global.anthropic.claude-opus-4-8",
     "MODEL_SONNET": "global.anthropic.claude-sonnet-4-6",
     "MODEL_HAIKU": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -275,6 +276,24 @@ class TestBootstrap(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DESKTOP_OIDC_CLIENT_ID": ""}):
             resp = handler.handler(self._bootstrap_event("any"), None)
         self.assertEqual(resp["statusCode"], 404)
+
+
+@_apply_env
+class TestWebPortalDisabled(unittest.TestCase):
+    def test_portal_shows_info_page_when_web_portal_disabled(self):
+        with mock.patch.dict(os.environ, {"WEB_PORTAL_ENABLED": ""}):
+            resp = handler.handler({"path": "/portal", "headers": {"host": PORTAL_HOST}}, None)
+        self.assertEqual(resp["statusCode"], 200)
+        self.assertIn("bootstrap", resp["body"])
+
+    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
+    def test_bootstrap_still_works_when_web_portal_disabled(self, mock_key, mock_userinfo):
+        token = _make_jwt({"iss": "https://test-org.okta.com", "cid": "0oaNATIVETEST", "exp": 9999999999})
+        with mock.patch.dict(os.environ, {"WEB_PORTAL_ENABLED": ""}):
+            resp = handler.handler(
+                {"path": "/portal/bootstrap", "headers": {"authorization": f"Bearer {token}"}}, None)
+        self.assertEqual(resp["statusCode"], 200)
 
 
 @_apply_env

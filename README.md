@@ -8,6 +8,19 @@
 
 원본 블루프린트를 기반으로, **AWS CLI를 전혀 사용하지 않는 일반 사용자**(Claude Desktop / Claude Code)를 위해 재설계한 버전입니다.
 
+## 인증 경로: 주력과 백업
+
+| | 주력 — Claude Desktop Bootstrap (앱 네이티브 OIDC) | 백업 — 웹 포털 (`-c enableWebPortal=true`) |
+|---|---|---|
+| 사용자 경험 | **앱 실행 → Okta 로그인 → 끝** (키를 보지도 입력하지도 않음) | 브라우저에서 포털 로그인 → 키 복사 → 앱에 붙여넣기 |
+| 인증 체인 | 앱 → Okta 직접 (PKCE) → `/portal/bootstrap` → Virtual Key 자동 적용 | 브라우저 → **Cognito** Hosted UI → Okta → 키 화면 |
+| Cognito | **불필요** | 필요 (활성화 시에만 생성) |
+| 배포물 | `templates/claude-desktop-bootstrap.reg` (전 PC 동일 1개) | 없음 (URL 안내만) |
+| 대상 | Claude Desktop 1.10270.0+ | 구버전 앱, Claude Code CLI, 비상용 |
+
+주력 경로는 실기기(macOS, 앱 1.18286.0)에서 end-to-end 검증 완료되었습니다.
+상세: [docs/claude-desktop-oidc-guide.md](docs/claude-desktop-oidc-guide.md)
+
 ## 원본 대비 변경 사항
 
 | 항목 | 원본 블루프린트 | 이 버전 |
@@ -92,8 +105,9 @@ npx cdk deploy LlmGatewayStack \
 | `certificateArn` | (없음) | ALB HTTPS 인증서. 미지정 시 HTTP-only (데모 전용) |
 | `allowedCidrs` | (없음 = 전체 개방) | ALB 인바운드 허용 CIDR 목록, 쉼표 구분 (예: `-c allowedCidrs=10.0.0.0/8,203.0.113.0/24`) |
 | `oktaIssuer` | (없음) | Okta 도메인 URL. 미지정 시 Cognito 자체 사용자 풀 (테스트 전용) |
-| `oktaClientId` / `oktaClientSecret` | (없음) | Okta OIDC 앱 자격증명 (포털용 Web App) |
-| `desktopOidcClientId` | (없음) | Claude Desktop 앱 네이티브 OIDC용 Native App Client ID. 지정 시 LiteLLM JWT 인증 활성화 — [docs/claude-desktop-oidc-guide.md](docs/claude-desktop-oidc-guide.md) |
+| `desktopOidcClientId` | (없음) | **주력**: Claude Desktop bootstrap용 Okta Native App Client ID. `oktaIssuer`와 함께 지정 시 `/portal/bootstrap` 활성화 |
+| `enableWebPortal` | `false` | **백업**: Cognito 기반 웹 포털(브라우저 키 발급) 활성화 |
+| `oktaClientId` / `oktaClientSecret` | (없음) | 웹 포털용 Okta Web App 자격증명 (`enableWebPortal=true`일 때만 필요) |
 
 > Okta client secret을 셸 히스토리에 남기고 싶지 않다면 `cdk.json`의 `context`에 넣거나 환경변수 `OKTA_CLIENT_SECRET`으로 전달하세요.
 

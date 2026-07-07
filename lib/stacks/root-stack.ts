@@ -55,8 +55,13 @@ export class RootStack extends cdk.Stack {
       desktopOidcClientId: ctx('desktopOidcClientId'),
     });
 
+    // 웹 포털(Cognito 기반 브라우저 키 발급)은 백업 플랜 — 기본 비활성.
+    // 주력은 Claude Desktop bootstrap (desktopOidcClientId로 활성화).
+    const enableWebPortal = ctx('enableWebPortal') === 'true';
+
     const portal = new PortalStack(this, 'Portal', {
       oktaIssuer: ctx('oktaIssuer'),
+      enableWebPortal,
       oktaClientId: ctx('oktaClientId'),
       oktaClientSecret: ctx('oktaClientSecret'),
       models,
@@ -124,8 +129,10 @@ export class RootStack extends cdk.Stack {
       description: 'LLM Gateway base URL (ANTHROPIC_BASE_URL)',
     });
     new cdk.CfnOutput(this, 'KeyPortalUrl', {
-      value: portal.portalUrl,
-      description: 'Self-service key portal URL (Okta 로그인 후 Virtual Key 발급)',
+      value: enableWebPortal
+        ? portal.portalUrl
+        : `${portal.portalUrl} (웹 포털 비활성 — 주력은 bootstrap, -c enableWebPortal=true로 활성화)`,
+      description: 'Self-service key portal URL (백업 플랜)',
     });
     new cdk.CfnOutput(this, 'DeployedRegion', { value: this.region });
     new cdk.CfnOutput(this, 'NatEip', {

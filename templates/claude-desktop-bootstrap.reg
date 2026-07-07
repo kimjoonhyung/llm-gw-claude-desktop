@@ -1,0 +1,23 @@
+Windows Registry Editor Version 5.00
+
+; Claude Desktop bootstrap 구성 — 전 PC 동일 파일 1개로 배포
+; 게이트웨이 주소/키/모델 목록은 없음: 앱이 Okta 로그인 후 bootstrap 서버에서 자동 수령
+;
+; 배포 전 치환할 값:
+;   {ALB_DNS}            게이트웨이 ALB 도메인 (배포 출력 GatewayUrl에서 https:// 제외)
+;   {OKTA_ISSUER}        예: https://your-org.okta.com
+;   {NATIVE_CLIENT_ID}   Okta Native Application의 Client ID
+;
+; 주의:
+; - bootstrapOidc는 JSON 전체를 \" 이스케이프한 단일 REG_SZ 문자열 (하위 키로 쪼개지 말 것)
+; - Okta Native App의 Sign-in redirect URIs에 다음 둘 다 등록:
+;     http://localhost:8123/callback
+;     http://127.0.0.1:8123/callback
+; - HKLM은 관리자 권한 필요. 사용자 자율 설치 시 HKEY_CURRENT_USER\SOFTWARE\Policies\Claude 사용
+; - 자체서명 인증서 사용 시 인증서 신뢰 설치가 선행되어야 함 (docs/claude-desktop-oidc-guide.md)
+; - 적용 후 Claude Desktop 완전 종료 후 재실행
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude]
+"bootstrapEnabled"="true"
+"bootstrapUrl"="https://{ALB_DNS}/portal/bootstrap"
+"bootstrapOidc"="{\"issuer\":\"{OKTA_ISSUER}\",\"clientId\":\"{NATIVE_CLIENT_ID}\",\"redirectPort\":8123,\"scopes\":\"openid profile email offline_access\"}"
