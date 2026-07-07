@@ -318,7 +318,8 @@ def _ensure_litellm_user(master_key: str, email: str) -> None:
         _litellm_request("POST", "/user/new", master_key, body=body)
         logger.info("LiteLLM 사용자 생성: user=%s", email)
     except urllib.error.HTTPError as e:
-        if e.code == 400:
+        # 400/409 모두 "이미 존재" 응답 (LiteLLM 버전에 따라 다름)
+        if e.code in (400, 409):
             logger.info("LiteLLM 사용자 이미 존재: user=%s", email)
         else:
             logger.warning("LiteLLM 사용자 생성 실패(키 발급은 계속): user=%s code=%d", email, e.code)
