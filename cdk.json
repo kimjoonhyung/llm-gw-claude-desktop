@@ -27,6 +27,7 @@
     "allowedCidrs": "",
     "oktaIssuer": "",
     "oktaClientId": "",
-    "oktaClientSecret": ""
+    "oktaClientSecret": "",
+    "desktopOidcClientId": ""
   }
 }

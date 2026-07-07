@@ -19,6 +19,14 @@ export interface GatewayStackProps {
   certificateArn: string;
   litellmImageTag: string;
   models: ModelIds;
+  /**
+   * Claude Desktop 앱 네이티브 OIDC(inferenceGatewayOidc)용 JWT 인증.
+   * 둘 다 지정 시 LiteLLM에 enable_jwt_auth가 켜지고, Okta JWKS로 서명 검증 +
+   * audience(클라이언트 ID) 고정 + 사용자 자동 생성(user_id_upsert)이 활성화된다.
+   * Virtual Key 방식과 병행 동작한다.
+   */
+  oktaIssuer: string;
+  desktopOidcClientId: string;
 }
 
 export class GatewayStack extends cdk.NestedStack {
@@ -92,6 +100,24 @@ export class GatewayStack extends cdk.NestedStack {
     // Claude Code가 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN(Virtual Key)로 호출하면
     // /v1/messages 요청의 모델명을 model_list로 매핑해 Bedrock으로 라우팅한다.
     const { opus, sonnet, haiku } = props.models;
+
+    // Claude Desktop 앱 네이티브 OIDC(JWT) 인증 — oktaIssuer + desktopOidcClientId 지정 시 활성화
+    const useJwtAuth = !!(props.oktaIssuer && props.desktopOidcClientId);
+    const jwtAuthLines = useJwtAuth
+      ? [
+          '  enable_jwt_auth: true',
+          '  litellm_jwtauth:',
+          // Okta org authorization server의 JWKS 엔드포인트
+          `    public_key_url: ${props.oktaIssuer}/oauth2/v1/keys`,
+          // audience 미지정 시 테넌트의 아무 토큰이나 통과하므로 반드시 고정
+          `    audience: ${props.desktopOidcClientId}`,
+          '    user_id_jwt_field: email',
+          '    user_email_jwt_field: email',
+          // 첫 JWT 호출 시 LiteLLM Internal User 자동 생성 (포털 JIT와 동일 효과)
+          '    user_id_upsert: true',
+        ]
+      : [];
+
     const litellmConfig = [
       'model_list:',
       `  - model_name: ${opus}`,
@@ -114,6 +140,7 @@ export class GatewayStack extends cdk.NestedStack {
       'general_settings:',
       '  master_key: os.environ/LITELLM_MASTER_KEY',
       '  database_url: os.environ/DATABASE_URL',
+      ...jwtAuthLines,
     ].join('\n');
 
     // --- Container ---

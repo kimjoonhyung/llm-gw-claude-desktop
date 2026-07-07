@@ -51,6 +51,8 @@ export class RootStack extends cdk.Stack {
       certificateArn: ctx('certificateArn'),
       litellmImageTag,
       models,
+      oktaIssuer: ctx('oktaIssuer'),
+      desktopOidcClientId: ctx('desktopOidcClientId'),
     });
 
     const portal = new PortalStack(this, 'Portal', {
@@ -135,5 +137,11 @@ export class RootStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'ModelPrefix', { value: modelPrefix });
     new cdk.CfnOutput(this, 'LitellmImage', { value: `ghcr.io/berriai/litellm:${litellmImageTag}` });
+    new cdk.CfnOutput(this, 'DesktopOidcJwtAuth', {
+      value: ctx('desktopOidcClientId')
+        ? `enabled (audience: ${ctx('desktopOidcClientId')})`
+        : 'disabled (-c desktopOidcClientId=... 로 활성화)',
+      description: 'Claude Desktop 앱 네이티브 OIDC(JWT) 인증 상태',
+    });
   }
 }

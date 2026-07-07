@@ -92,7 +92,8 @@ npx cdk deploy LlmGatewayStack \
 | `certificateArn` | (없음) | ALB HTTPS 인증서. 미지정 시 HTTP-only (데모 전용) |
 | `allowedCidrs` | (없음 = 전체 개방) | ALB 인바운드 허용 CIDR 목록, 쉼표 구분 (예: `-c allowedCidrs=10.0.0.0/8,203.0.113.0/24`) |
 | `oktaIssuer` | (없음) | Okta 도메인 URL. 미지정 시 Cognito 자체 사용자 풀 (테스트 전용) |
-| `oktaClientId` / `oktaClientSecret` | (없음) | Okta OIDC 앱 자격증명 |
+| `oktaClientId` / `oktaClientSecret` | (없음) | Okta OIDC 앱 자격증명 (포털용 Web App) |
+| `desktopOidcClientId` | (없음) | Claude Desktop 앱 네이티브 OIDC용 Native App Client ID. 지정 시 LiteLLM JWT 인증 활성화 — [docs/claude-desktop-oidc-guide.md](docs/claude-desktop-oidc-guide.md) |
 
 > Okta client secret을 셸 히스토리에 남기고 싶지 않다면 `cdk.json`의 `context`에 넣거나 환경변수 `OKTA_CLIENT_SECRET`으로 전달하세요.
 
