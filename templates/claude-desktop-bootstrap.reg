@@ -16,6 +16,10 @@ Windows Registry Editor Version 5.00
 ; - HKLM은 관리자 권한 필요. 사용자 자율 설치 시 HKEY_CURRENT_USER\SOFTWARE\Policies\Claude 사용
 ; - 자체서명 인증서 사용 시 인증서 신뢰 설치가 선행되어야 함 (docs/claude-desktop-oidc-guide.md)
 ; - 적용 후 Claude Desktop 완전 종료 후 재실행
+; - 탭 정책(chatTabEnabled 등)은 이 파일에 넣지 않는다:
+;   bootstrap 서버 응답이 중앙에서 내려주므로 (lambda/key-portal handler 참고)
+;   탭 정책 변경 시 서버만 수정하면 되고 PC 재배포가 필요 없다.
+;   참고: boolean 키를 직접 넣을 경우 dword가 아닌 REG_SZ 문자열 "true" 사용.
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude]
 "bootstrapEnabled"="true"

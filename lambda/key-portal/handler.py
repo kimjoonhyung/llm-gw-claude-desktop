@@ -481,6 +481,11 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
             os.environ.get("MODEL_SONNET", ""),
             os.environ.get("MODEL_HAIKU", ""),
         ],
+        # 탭 활성화 — bootstrap 응답으로 내려주면 PC별 설정 없이 전 사용자 적용.
+        # 공식 문서상 boolean 키도 문자열 "true"/"false"로 전달해야 한다.
+        "chatTabEnabled": "true",
+        "coworkTabEnabled": "true",
+        "isClaudeCodeForDesktopEnabled": "true",
     }
     return _json_response(200, config)
 
