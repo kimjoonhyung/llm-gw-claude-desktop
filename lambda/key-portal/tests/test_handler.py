@@ -233,6 +233,22 @@ class TestBootstrap(unittest.TestCase):
         self.assertEqual(len(config["inferenceModels"]), 3)
         mock_key.assert_called_once_with("boot@example.com")
 
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
+    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
+    def test_managed_mcp_servers_included_when_configured(self, mock_userinfo, mock_key):
+        mcp = '[{"name":"agentcore-gateway","transport":"http","url":"https://gw/mcp"}]'
+        with mock.patch.dict(os.environ, {"MCP_SERVERS_JSON": mcp}):
+            resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
+        config = json.loads(resp["body"])
+        self.assertEqual(config["managedMcpServers"][0]["name"], "agentcore-gateway")
+
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
+    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
+    def test_no_mcp_key_when_unset(self, mock_userinfo, mock_key):
+        with mock.patch.dict(os.environ, {"MCP_SERVERS_JSON": ""}):
+            resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
+        self.assertNotIn("managedMcpServers", json.loads(resp["body"]))
+
     def test_missing_token_401(self):
         resp = handler.handler({"path": "/portal/bootstrap", "headers": {}}, None)
         self.assertEqual(resp["statusCode"], 401)

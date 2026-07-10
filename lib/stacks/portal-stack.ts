@@ -35,6 +35,8 @@ export interface PortalStackProps {
    */
   albListener: elbv2.IApplicationListener;
   gatewayUrl: string;
+  /** bootstrap으로 배포할 조직 관리 MCP 커넥터 (managedMcpServers JSON 배열 문자열, 없으면 빈 문자열) */
+  mcpServersJson: string;
 }
 
 /**
@@ -133,6 +135,8 @@ export class PortalStack extends cdk.NestedStack {
         DESKTOP_OIDC_CLIENT_ID: this.node.tryGetContext('desktopOidcClientId') || '',
         // 백업: 웹 포털(브라우저 키 발급) 활성화 여부
         WEB_PORTAL_ENABLED: props.enableWebPortal ? 'true' : '',
+        // bootstrap으로 배포할 조직 관리 MCP 커넥터 (JSON 배열, 예: AgentCore Gateway)
+        MCP_SERVERS_JSON: props.mcpServersJson,
       },
     });
 

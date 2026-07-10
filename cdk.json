@@ -29,6 +29,8 @@
     "desktopOidcClientId": "",
     "enableWebPortal": "",
     "oktaClientId": "",
-    "oktaClientSecret": ""
+    "oktaClientSecret": "",
+    "mcpGatewayUrl": "",
+    "mcpGatewayName": ""
   }
 }

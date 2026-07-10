@@ -59,6 +59,31 @@ export class RootStack extends cdk.Stack {
     // 주력은 Claude Desktop bootstrap (desktopOidcClientId로 활성화).
     const enableWebPortal = ctx('enableWebPortal') === 'true';
 
+    // 조직 관리 MCP 커넥터: -c mcpGatewayUrl=... 지정 시 bootstrap에 포함.
+    // OAuth는 bootstrap과 동일한 Okta Native App(desktopOidcClientId) 재사용.
+    // 콜백 포트는 bootstrap(8123)과 겹치지 않게 8124.
+    const mcpGatewayUrl = ctx('mcpGatewayUrl');
+    const desktopClientId = ctx('desktopOidcClientId');
+    const oktaIssuerForMcp = ctx('oktaIssuer');
+    const mcpServersJson = mcpGatewayUrl && desktopClientId && oktaIssuerForMcp
+      ? JSON.stringify([
+          {
+            name: ctx('mcpGatewayName') || 'agentcore-gateway',
+            transport: 'http',
+            url: mcpGatewayUrl,
+            oauth: {
+              clientId: desktopClientId,
+              issuer: oktaIssuerForMcp,
+              authorizationServer: [oktaIssuerForMcp],
+              scope: 'openid profile email offline_access',
+              appendOfflineAccess: true,
+              callbackHost: '127.0.0.1',
+              callbackPort: 8124,
+            },
+          },
+        ])
+      : '';
+
     const portal = new PortalStack(this, 'Portal', {
       oktaIssuer: ctx('oktaIssuer'),
       enableWebPortal,
@@ -69,6 +94,7 @@ export class RootStack extends cdk.Stack {
       lambdaSg: network.lambdaSg,
       albListener: gateway.listener,
       gatewayUrl: gateway.gatewayUrl,
+      mcpServersJson,
     });
 
     // Portal Lambda: LiteLLM 연동 환경변수

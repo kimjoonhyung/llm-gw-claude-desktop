@@ -494,7 +494,30 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
         "isDesktopExtensionSignatureRequired": "false",
         "isLocalDevMcpEnabled": "true",
     }
+
+    # --- 조직 관리 MCP 커넥터 (AgentCore Gateway 등) ---
+    # bootstrap 응답에 포함하면 사용자가 URL을 직접 입력하지 않아도
+    # 커넥터 목록에 자동으로 뜬다. OAuth는 bootstrap과 동일한 Okta Native App 재사용
+    # (게이트웨이 authorizer 허용 클라이언트에 등록되어 있어야 함).
+    # 콜백 포트는 bootstrap(8123)과 겹치지 않게 분리.
+    managed_mcp = _managed_mcp_servers()
+    if managed_mcp:
+        config["managedMcpServers"] = managed_mcp
+
     return _json_response(200, config)
+
+
+def _managed_mcp_servers() -> list:
+    """MCP_SERVERS_JSON 환경변수(JSON 배열)를 파싱해 반환. 미설정이면 빈 리스트."""
+    raw = os.environ.get("MCP_SERVERS_JSON", "").strip()
+    if not raw:
+        return []
+    try:
+        servers = json.loads(raw)
+        return servers if isinstance(servers, list) else []
+    except Exception:
+        logger.warning("MCP_SERVERS_JSON 파싱 실패", exc_info=True)
+        return []
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
