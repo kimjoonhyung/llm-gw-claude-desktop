@@ -481,11 +481,18 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
             os.environ.get("MODEL_SONNET", ""),
             os.environ.get("MODEL_HAIKU", ""),
         ],
-        # 탭 활성화 — bootstrap 응답으로 내려주면 PC별 설정 없이 전 사용자 적용.
-        # 공식 문서상 boolean 키도 문자열 "true"/"false"로 전달해야 한다.
+        # --- 기능 정책 (bootstrap 중앙 관리, boolean도 문자열로) ---
+        # 최대 개방 프로파일: 탭 전부 + 확장/로컬 MCP/자동 모드/파일 분석 허용.
+        # 제한 키(disabledBuiltinTools, allowedWorkspaceFolders,
+        # coworkEgressAllowedHosts 등)는 아예 넣지 않는다 — 미설정 = 무제한.
         "chatTabEnabled": "true",
         "coworkTabEnabled": "true",
         "isClaudeCodeForDesktopEnabled": "true",
+        "chatAdvancedFileAnalysisEnabled": "true",
+        "autoModeEnabled": "true",
+        "isDesktopExtensionEnabled": "true",
+        "isDesktopExtensionSignatureRequired": "false",
+        "isLocalDevMcpEnabled": "true",
     }
     return _json_response(200, config)
 
