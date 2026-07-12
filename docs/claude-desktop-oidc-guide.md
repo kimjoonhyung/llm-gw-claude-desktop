@@ -171,3 +171,74 @@ Windows (`.reg`) / macOS (`.mobileconfig`)로 전 PC에 배포. 핵심 값:
 - **Event Hook과의 관계**: 기존 오프보딩 훅은 Virtual Key만 삭제합니다.
   JWT 경로는 Okta 세션 차단으로 자연 차단되므로 별도 회수가 불필요하지만,
   병행 기간에는 두 경로 모두 오프보딩이 동작하는지 확인하세요.
+
+---
+
+# AgentCore Gateway MCP 커넥터 연동 (검증 완료)
+
+AgentCore Runtime의 에이전트를 Claude Desktop의 조직 관리 커넥터로 노출하는 구성.
+bootstrap 응답의 `managedMcpServers`로 중앙 배포된다 (`-c mcpGatewayUrl=...`).
+
+## 동작 구조
+
+```
+Claude Desktop ──(MCP + Okta OAuth)──> AgentCore Gateway ──> AgentCore Runtime (에이전트)
+```
+
+## 배포
+
+```bash
+npx cdk deploy LlmGatewayStackV2 \
+  ... 기존 컨텍스트 ... \
+  -c mcpGatewayUrl=https://{gateway-id}.gateway.bedrock-agentcore.{region}.amazonaws.com/mcp \
+  -c mcpGatewayName={커넥터 표시 이름}
+```
+
+MCP OAuth는 bootstrap과 같은 Okta Native App을 재사용하되, **custom AS**(`{issuer}/oauth2/default`)로
+로그인한다 (`-c mcpAuthServer=...`로 오버라이드 가능). 콜백 포트 8124 —
+Okta Native App의 redirect URI에 `http://127.0.0.1:8124/callback` 추가 필요.
+
+## AgentCore Gateway authorizer 필수 구성 (함정 2개)
+
+실측으로 확인한 것: 아래 둘 중 하나라도 어긋나면 게이트웨이가
+`insufficient_scope`(403)를 반환한다 — **이름과 달리 scope 문제가 아니다.**
+AgentCore는 서명 검증 후의 모든 클레임 검증 실패를 이 에러로 뭉뚱그린다.
+
+**함정 1 — audience**: Okta org AS(`https://{org}.okta.com`)의 access token은
+`aud`를 클라이언트 ID로 발급할 수 없다. 반드시 **custom AS**(`/oauth2/default`)를
+쓰고 게이트웨이 `allowedAudience`를 `api://default`로 설정한다.
+custom AS에는 해당 앱을 허용하는 **Access Policy**가 있어야 한다
+(없으면 로그인 단계에서 "Policy evaluation failed" 400).
+
+**함정 2 — 클레임 이름**: 게이트웨이의 `allowedClients`는 토큰의 `client_id`
+클레임을 검사하는데 **Okta는 `cid`에 담는다** (client_id 클레임 없음).
+`allowedAudience`+`allowedClients`는 AND 조건이라 항상 실패한다.
+`allowedClients` 대신 `customClaims`로 `cid`를 검증한다 (AWS 공식 Okta 워크숍 패턴):
+
+```json
+{"customJWTAuthorizer": {
+  "discoveryUrl": "https://{org}.okta.com/oauth2/default/.well-known/openid-configuration",
+  "allowedAudience": ["api://default"],
+  "customClaims": [{
+    "inboundTokenClaimName": "cid",
+    "inboundTokenClaimValueType": "STRING",
+    "authorizingClaimMatchValue": {
+      "claimMatchValue": {"matchValueString": "{NATIVE_CLIENT_ID}"},
+      "claimMatchOperator": "EQUALS"
+    }
+  }]
+}}
+```
+
+> 대안: Okta custom AS에 `client_id` = `app.clientId` 커스텀 클레임을 추가하면
+> `allowedClients`를 그대로 쓸 수 있다. 둘 중 하나만 하면 된다.
+
+## 트러블슈팅 팁
+
+- `insufficient_scope` 403 → scope가 아니라 **클레임 검증 실패**. 토큰의
+  `aud`/`cid`를 디코딩해 게이트웨이 설정과 대조할 것.
+- 게이트웨이 `exceptionLevel: DEBUG`를 켜면 어떤 검증이 실패했는지 구체적으로 반환.
+- "The grant was issued for another authorization server" → AS 변경 전에 받은
+  refresh token 캐시. 커넥터 **이름을 바꿔** 재배포하면 새 로그인을 강제할 수 있다
+  (토큰은 커넥터 이름 키로 저장됨).
+- 로그 위치 (macOS): `~/Library/Logs/Claude-3p/main.log` — `custom3p-mcp` 태그.

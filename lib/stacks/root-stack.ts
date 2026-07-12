@@ -65,6 +65,10 @@ export class RootStack extends cdk.Stack {
     const mcpGatewayUrl = ctx('mcpGatewayUrl');
     const desktopClientId = ctx('desktopOidcClientId');
     const oktaIssuerForMcp = ctx('oktaIssuer');
+    // AgentCore Gateway authorizer는 custom AS(/oauth2/default) 토큰(aud: api://default)을
+    // 요구하므로, MCP 커넥터도 org AS가 아닌 custom AS로 로그인해야 한다.
+    // -c mcpAuthServer=... 로 오버라이드, 기본은 {issuer}/oauth2/default.
+    const mcpAuthServer = ctx('mcpAuthServer') || `${oktaIssuerForMcp}/oauth2/default`;
     const mcpServersJson = mcpGatewayUrl && desktopClientId && oktaIssuerForMcp
       ? JSON.stringify([
           {
@@ -73,8 +77,8 @@ export class RootStack extends cdk.Stack {
             url: mcpGatewayUrl,
             oauth: {
               clientId: desktopClientId,
-              issuer: oktaIssuerForMcp,
-              authorizationServer: [oktaIssuerForMcp],
+              issuer: mcpAuthServer,
+              authorizationServer: [mcpAuthServer],
               scope: 'openid profile email offline_access',
               appendOfflineAccess: true,
               callbackHost: '127.0.0.1',
