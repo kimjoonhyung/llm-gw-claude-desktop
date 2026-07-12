@@ -126,6 +126,9 @@ export class GatewayStack extends cdk.NestedStack {
       // 지정된 모델만 노출/허용하는 것이 거버넌스 측면에서도 올바르다.
       'litellm_settings:',
       '  drop_params: true',
+      // 도구 호출(MCP) 플로우에서 빈 텍스트 블록이 생기면 Bedrock Converse가
+      // "text content blocks must be non-empty"로 거부한다. modify_params가 자동 보정.
+      '  modify_params: true',
       'general_settings:',
       '  master_key: os.environ/LITELLM_MASTER_KEY',
       '  database_url: os.environ/DATABASE_URL',
