@@ -14,7 +14,7 @@ Windows Registry Editor Version 5.00
 ;     http://localhost:8123/callback
 ;     http://127.0.0.1:8123/callback
 ; - HKLM은 관리자 권한 필요. 사용자 자율 설치 시 HKEY_CURRENT_USER\SOFTWARE\Policies\Claude 사용
-; - 자체서명 인증서 사용 시 인증서 신뢰 설치가 선행되어야 함 (docs/claude-desktop-oidc-guide.md)
+; - 자체서명 인증서 사용 시 인증서 신뢰 설치가 선행되어야 함 (guide/04-claude-desktop.md)
 ; - 적용 후 Claude Desktop 완전 종료 후 재실행
 ; - 탭 정책(chatTabEnabled 등)은 이 파일에 넣지 않는다:
 ;   bootstrap 서버 응답이 중앙에서 내려주므로 (lambda/key-portal handler 참고)

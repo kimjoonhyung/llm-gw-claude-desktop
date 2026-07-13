@@ -8,6 +8,10 @@
 
 원본 블루프린트를 기반으로, **AWS CLI를 전혀 사용하지 않는 일반 사용자**(Claude Desktop / Claude Code)를 위해 재설계한 버전입니다.
 
+> **📖 구축·운영 가이드**: 외부 공유용으로 정리된 단계별 가이드는 [`guide/`](guide/README.md)에 있습니다.
+> (아키텍처 · 배포 · Okta 설정 · Claude Desktop 배포 · AgentCore MCP 연동 · 운영 · 트러블슈팅)
+> 이 README는 저장소 개발자용 요약이고, 실제 구축은 `guide/`를 따라가세요.
+
 ## 인증 경로: 주력과 백업
 
 | | 주력 — Claude Desktop Bootstrap (앱 네이티브 OIDC) | 백업 — 웹 포털 (`-c enableWebPortal=true`) |
@@ -19,7 +23,7 @@
 | 대상 | Claude Desktop 1.10270.0+ | 구버전 앱, Claude Code CLI, 비상용 |
 
 주력 경로는 실기기(macOS, 앱 1.18286.0)에서 end-to-end 검증 완료되었습니다.
-상세: [docs/claude-desktop-oidc-guide.md](docs/claude-desktop-oidc-guide.md)
+상세: [guide/04-claude-desktop.md](guide/04-claude-desktop.md)
 
 ## 원본 대비 변경 사항
 
@@ -113,7 +117,7 @@ npx cdk deploy LlmGatewayStack \
 
 ### 배포 후 Okta 설정 (1회)
 
-상세 절차는 **[docs/okta-integration-guide.md](docs/okta-integration-guide.md)** 참고. 요약:
+상세 절차는 **[guide/03-okta-setup.md](guide/03-okta-setup.md)** 참고. 요약:
 
 1. Okta Admin에서 OIDC **Web Application** 생성 (Grant: Authorization Code)
 2. Sign-in redirect URI에 배포 출력의 `OktaRedirectUri` 값 등록
