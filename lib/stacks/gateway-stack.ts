@@ -8,6 +8,8 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import type * as rds from 'aws-cdk-lib/aws-rds';
 import { Construct } from 'constructs';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PROJECT_NAME, ModelIds } from '../config/constants';
 
 export interface GatewayStackProps {
@@ -126,13 +128,21 @@ export class GatewayStack extends cdk.NestedStack {
       // 지정된 모델만 노출/허용하는 것이 거버넌스 측면에서도 올바르다.
       'litellm_settings:',
       '  drop_params: true',
-      // 도구 호출(MCP) 플로우에서 빈 텍스트 블록이 생기면 Bedrock Converse가
-      // "text content blocks must be non-empty"로 거부한다. modify_params가 자동 보정.
       '  modify_params: true',
+      // 도구 호출(MCP) 이력의 빈 text/thinking 블록을 제거하는 커스텀 pre-call 훅.
+      // Claude Desktop이 tool_use 턴에 빈 블록을 함께 담아 Bedrock Converse가 거부하는데,
+      // modify_params로는 이 조합이 정리되지 않아 훅에서 직접 제거한다.
+      '  callbacks: ["sanitize_hook.sanitize_bedrock_blocks_instance"]',
       'general_settings:',
       '  master_key: os.environ/LITELLM_MASTER_KEY',
       '  database_url: os.environ/DATABASE_URL',
     ].join('\n');
+
+    // 커스텀 훅 소스를 인라인으로 컨테이너에 주입 (base64 → 시작 시 파일로 기록).
+    // 공식 이미지를 그대로 쓰기 위해 Docker 빌드 없이 환경변수로 전달한다.
+    const sanitizeHookSource = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'litellm', 'sanitize_hook.py'), 'utf-8');
+    const sanitizeHookB64 = Buffer.from(sanitizeHookSource, 'utf-8').toString('base64');
 
     // --- Container ---
     this.taskDefinition.addContainer('litellm', {
@@ -153,9 +163,12 @@ export class GatewayStack extends cdk.NestedStack {
       environment: {
         DB_NAME: 'litellm',
         LITELLM_CONFIG_CONTENT: litellmConfig,
+        SANITIZE_HOOK_B64: sanitizeHookB64,
       },
       entryPoint: ['sh', '-c'],
       command: [
+        // 커스텀 훅을 config(/tmp)와 같은 디렉토리에 기록 — LiteLLM은 config 경로 기준으로 콜백 모듈을 찾는다
+        'printf \'%s\' "$SANITIZE_HOOK_B64" | base64 -d > /tmp/sanitize_hook.py && ' +
         'printf \'%s\' "$LITELLM_CONFIG_CONTENT" > /tmp/config.yaml && ' +
         'export DATABASE_URL="postgresql://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}" && ' +
         'exec litellm --config /tmp/config.yaml --port 4000',
