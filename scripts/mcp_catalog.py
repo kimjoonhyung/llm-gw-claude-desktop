@@ -9,6 +9,10 @@ Claude Desktop의 managedMcpServers로 내려준다. 서버 추가/회수는 이
 사용법:
   scripts/mcp_catalog.py list
   scripts/mcp_catalog.py add <name> <mcp-url> <okta-native-client-id> <okta-issuer> [group1,group2]
+      → AgentCore 게이트웨이 등 Okta(custom AS)로 인증하는 MCP
+  scripts/mcp_catalog.py add-external <name> <mcp-url> <issuer> [group1,group2]
+      → 외부 SaaS MCP(예: Notion 호스티드 MCP). 그 서비스 자체 OAuth로 사용자가 각자 로그인.
+        DCR 지원 서버는 client ID 불필요.
   scripts/mcp_catalog.py enable <name>
   scripts/mcp_catalog.py disable <name>
   scripts/mcp_catalog.py remove <name>
@@ -80,6 +84,33 @@ def cmd_add(name, url, client, issuer, groups=""):
     print(f"추가됨: {name} (groups={groups or '전원'})")
 
 
+def cmd_add_external(name, url, issuer, groups=""):
+    """외부 SaaS MCP(예: Notion 호스티드 MCP) 등록.
+    해당 서비스 자체 OAuth(AS)로 사용자가 각자 로그인한다. DCR 지원 서버는 clientId 불필요."""
+    group_list = [g.strip() for g in groups.split(",") if g.strip()]
+    iss = issuer.rstrip("/")
+    _table().put_item(Item={
+        "pk": f"MCP#{name}",
+        "sk": "CATALOG",
+        "name": name,
+        "url": url,
+        "transport": "http",
+        "enabled": True,
+        "allowed_groups": group_list,
+        "oauth": {
+            # 외부 서비스 AS. Claude Desktop이 DCR로 client를 동적 등록하고
+            # 사용자가 그 서비스(Notion 등)에 직접 로그인한다. Okta와 무관.
+            "issuer": iss,
+            "authorizationServer": [iss],
+            "scope": "",
+            "appendOfflineAccess": True,
+            "callbackHost": "127.0.0.1",
+            "callbackPort": 8124,
+        },
+    })
+    print(f"외부 MCP 추가됨: {name} (issuer={iss}, groups={groups or '전원'})")
+
+
 def cmd_toggle(name, enabled):
     _table().update_item(
         Key={"pk": f"MCP#{name}", "sk": "CATALOG"},
@@ -105,6 +136,10 @@ def main(argv):
         if len(args) < 4:
             print("add <name> <mcp-url> <client-id> <issuer> [groups]"); return 1
         cmd_add(*args[:5])
+    elif cmd == "add-external":
+        if len(args) < 3:
+            print("add-external <name> <mcp-url> <issuer> [groups]"); return 1
+        cmd_add_external(*args[:4])
     elif cmd in ("enable", "disable"):
         if not args:
             print(f"{cmd} <name>"); return 1
