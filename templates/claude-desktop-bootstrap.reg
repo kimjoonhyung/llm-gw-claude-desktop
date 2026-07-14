@@ -5,7 +5,7 @@ Windows Registry Editor Version 5.00
 ;
 ; 배포 전 치환할 값:
 ;   {ALB_DNS}            게이트웨이 ALB 도메인 (배포 출력 GatewayUrl에서 https:// 제외)
-;   {OKTA_ISSUER}        예: https://your-org.okta.com
+;   {OKTA_ISSUER}        예: https://your-org.okta.com/oauth2/default (custom AS — groups 클레임/MCP 위해 권장)
 ;   {NATIVE_CLIENT_ID}   Okta Native Application의 Client ID
 ;
 ; 주의:
@@ -24,4 +24,4 @@ Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude]
 "bootstrapEnabled"="true"
 "bootstrapUrl"="https://{ALB_DNS}/portal/bootstrap"
-"bootstrapOidc"="{\"issuer\":\"{OKTA_ISSUER}\",\"clientId\":\"{NATIVE_CLIENT_ID}\",\"redirectPort\":8123,\"scopes\":\"openid profile email offline_access\"}"
+"bootstrapOidc"="{\"issuer\":\"{OKTA_ISSUER}\",\"clientId\":\"{NATIVE_CLIENT_ID}\",\"redirectPort\":8123,\"scopes\":\"openid profile email groups offline_access\"}"

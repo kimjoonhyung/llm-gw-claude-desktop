@@ -20,7 +20,7 @@
             <key>bootstrapUrl</key>
             <string>https://{ALB_DNS}/portal/bootstrap</string>
             <key>bootstrapOidc</key>
-            <string>{"issuer":"{OKTA_ISSUER}","clientId":"{NATIVE_CLIENT_ID}","redirectPort":8123,"scopes":"openid profile email offline_access"}</string>
+            <string>{"issuer":"{OKTA_ISSUER}","clientId":"{NATIVE_CLIENT_ID}","redirectPort":8123,"scopes":"openid profile email groups offline_access"}</string>
         </dict>
     </array>
     <key>PayloadType</key>

@@ -35,13 +35,19 @@ export class MonitoringStack extends cdk.NestedStack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // --- DynamoDB: Config Table (Virtual Key 캐시) ---
+    // --- DynamoDB: Config Table (Virtual Key 캐시 + MCP 카탈로그) ---
     this.configTable = new dynamodb.Table(this, 'ConfigTable', {
       tableName: CONFIG_TABLE_NAME,
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // sk로 조회하기 위한 GSI (MCP 카탈로그: sk=CATALOG 항목 전체 조회용)
+    this.configTable.addGlobalSecondaryIndex({
+      indexName: 'sk-index',
+      partitionKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
     });
 
     // --- SNS Topic ---

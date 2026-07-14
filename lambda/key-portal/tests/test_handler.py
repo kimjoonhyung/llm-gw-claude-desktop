@@ -234,18 +234,47 @@ class TestBootstrap(unittest.TestCase):
         mock_key.assert_called_once_with("boot@example.com")
 
     @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
-    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
-    def test_managed_mcp_servers_included_when_configured(self, mock_userinfo, mock_key):
-        mcp = '[{"name":"agentcore-gateway","transport":"http","url":"https://gw/mcp"}]'
-        with mock.patch.dict(os.environ, {"MCP_SERVERS_JSON": mcp}):
+    @mock.patch.object(handler, "_fetch_okta_userinfo",
+                       return_value={"email": "b@e.com", "groups": ["weather-team"]})
+    def test_mcp_catalog_group_allowed(self, mock_userinfo, mock_key):
+        catalog = [
+            {"name": "seoul-weather", "url": "https://gw/mcp", "transport": "http",
+             "enabled": True, "allowed_groups": ["weather-team"]},
+            {"name": "finance", "url": "https://fin/mcp", "transport": "http",
+             "enabled": True, "allowed_groups": ["finance"]},
+        ]
+        with mock.patch.object(handler, "_dynamodb") as ddb:
+            ddb.Table.return_value.query.return_value = {"Items": catalog}
             resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
-        config = json.loads(resp["body"])
-        self.assertEqual(config["managedMcpServers"][0]["name"], "agentcore-gateway")
+        names = [s["name"] for s in json.loads(resp["body"])["managedMcpServers"]]
+        self.assertEqual(names, ["seoul-weather"])  # finance는 그룹 불일치로 제외
+
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
+    @mock.patch.object(handler, "_fetch_okta_userinfo",
+                       return_value={"email": "b@e.com", "groups": []})
+    def test_mcp_catalog_empty_groups_allows_everyone(self, mock_userinfo, mock_key):
+        catalog = [{"name": "public-mcp", "url": "https://gw/mcp", "transport": "http",
+                    "enabled": True, "allowed_groups": []}]
+        with mock.patch.object(handler, "_dynamodb") as ddb:
+            ddb.Table.return_value.query.return_value = {"Items": catalog}
+            resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
+        self.assertEqual(json.loads(resp["body"])["managedMcpServers"][0]["name"], "public-mcp")
+
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
+    @mock.patch.object(handler, "_fetch_okta_userinfo",
+                       return_value={"email": "b@e.com", "groups": ["weather-team"]})
+    def test_mcp_catalog_disabled_item_excluded(self, mock_userinfo, mock_key):
+        catalog = [{"name": "seoul-weather", "url": "https://gw/mcp", "transport": "http",
+                    "enabled": False, "allowed_groups": ["weather-team"]}]
+        with mock.patch.object(handler, "_dynamodb") as ddb:
+            ddb.Table.return_value.query.return_value = {"Items": catalog}
+            resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
+        self.assertNotIn("managedMcpServers", json.loads(resp["body"]))
 
     @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
     @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
-    def test_no_mcp_key_when_unset(self, mock_userinfo, mock_key):
-        with mock.patch.dict(os.environ, {"MCP_SERVERS_JSON": ""}):
+    def test_mcp_catalog_disabled_by_env(self, mock_userinfo, mock_key):
+        with mock.patch.dict(os.environ, {"MCP_CATALOG_ENABLED": "false"}):
             resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
         self.assertNotIn("managedMcpServers", json.loads(resp["body"]))
 
@@ -259,6 +288,14 @@ class TestBootstrap(unittest.TestCase):
         resp = handler.handler(self._bootstrap_event(token), None)
         self.assertEqual(resp["statusCode"], 401)
         mock_userinfo.assert_not_called()
+
+    @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
+    @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
+    def test_custom_as_sub_issuer_accepted(self, mock_userinfo, mock_key):
+        # custom AS(/oauth2/default) 토큰도 허용 (groups 클레임/MCP 경로)
+        token = _make_jwt(self._valid_claims(iss="https://test-org.okta.com/oauth2/default"))
+        resp = handler.handler(self._bootstrap_event(token), None)
+        self.assertEqual(resp["statusCode"], 200)
 
     @mock.patch.object(handler, "_fetch_okta_userinfo")
     def test_wrong_client_rejected(self, mock_userinfo):

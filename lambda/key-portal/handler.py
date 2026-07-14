@@ -444,8 +444,11 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
     claims = _decode_jwt_payload(token)
     if claims is None:
         return _json_response(401, {"error": "malformed token"})
-    if claims.get("iss") != okta_issuer:
-        logger.warning("bootstrap: issuer 불일치: %s", claims.get("iss"))
+    # issuer 허용: org AS(OKTA_ISSUER) 또는 그 하위 custom AS(/oauth2/*).
+    # groups 클레임/MCP를 위해 custom AS(/oauth2/default)로 로그인하므로 둘 다 받는다.
+    token_iss = claims.get("iss") or ""
+    if not (token_iss == okta_issuer or token_iss.startswith(okta_issuer + "/oauth2/")):
+        logger.warning("bootstrap: issuer 불일치: %s", token_iss)
         return _json_response(401, {"error": "invalid issuer"})
     token_client = claims.get("cid") or claims.get("client_id") or claims.get("aud")
     if expected_client_id not in (token_client if isinstance(token_client, list) else [token_client]):
@@ -454,9 +457,9 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
     if claims.get("exp") is not None and claims["exp"] < _now_epoch():
         return _json_response(401, {"error": "token expired"})
 
-    # 2. Okta 서버 측 최종 검증 + email 획득
+    # 2. Okta 서버 측 최종 검증 + email 획득 (토큰 발급 issuer의 userinfo 사용)
     try:
-        userinfo = _fetch_okta_userinfo(okta_issuer, token)
+        userinfo = _fetch_okta_userinfo(token_iss, token)
     except urllib.error.HTTPError as e:
         logger.warning("bootstrap: userinfo 검증 실패: %d", e.code)
         return _json_response(401, {"error": "token verification failed"})
@@ -465,7 +468,11 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
     if not email:
         return _json_response(403, {"error": "email claim missing"})
 
-    logger.info("bootstrap 요청: email=%s", email)
+    # Okta 그룹 (MCP 커넥터 선별용). access token 클레임을 우선 사용하고
+    # (groups를 Access Token에만 넣는 Okta 설정이 흔함) 없으면 userinfo로 폴백.
+    user_groups = _extract_groups(claims) or _extract_groups(userinfo)
+
+    logger.info("bootstrap 요청: email=%s groups=%s", email, user_groups)
     virtual_key = _get_or_create_virtual_key(email)
 
     # 응답 JSON = Claude Desktop의 유효 설정 (managed config 스키마)
@@ -496,28 +503,96 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
     }
 
     # --- 조직 관리 MCP 커넥터 (AgentCore Gateway 등) ---
-    # bootstrap 응답에 포함하면 사용자가 URL을 직접 입력하지 않아도
-    # 커넥터 목록에 자동으로 뜬다. OAuth는 bootstrap과 동일한 Okta Native App 재사용
-    # (게이트웨이 authorizer 허용 클라이언트에 등록되어 있어야 함).
-    # 콜백 포트는 bootstrap(8123)과 겹치지 않게 분리.
-    managed_mcp = _managed_mcp_servers()
+    # DDB 카탈로그에서 enabled=true인 서버 중, 사용자 그룹으로 허용된 것만 골라 넣는다.
+    # 사용자가 URL을 입력하지 않아도 커넥터 목록에 자동으로 뜨고, 카탈로그 변경 시
+    # 재배포 없이 DDB만 수정하면 다음 앱 재시작에 반영된다.
+    managed_mcp = _managed_mcp_servers(user_groups)
     if managed_mcp:
         config["managedMcpServers"] = managed_mcp
 
     return _json_response(200, config)
 
 
-def _managed_mcp_servers() -> list:
-    """MCP_SERVERS_JSON 환경변수(JSON 배열)를 파싱해 반환. 미설정이면 빈 리스트."""
-    raw = os.environ.get("MCP_SERVERS_JSON", "").strip()
-    if not raw:
+def _extract_groups(userinfo: dict[str, Any]) -> list[str]:
+    """userinfo에서 그룹 목록을 추출한다. 클레임 이름은 IdP 설정에 따라 다를 수 있어 관대하게 처리."""
+    for key in ("groups", "groupMemberships", "roles"):
+        val = userinfo.get(key)
+        if isinstance(val, list):
+            return [str(g) for g in val]
+        if isinstance(val, str) and val:
+            return [val]
+    return []
+
+
+def _managed_mcp_servers(user_groups: list[str]) -> list:
+    """DDB config 테이블의 MCP 카탈로그를 조회해 그룹으로 필터링한다.
+
+    카탈로그 아이템 형식 (pk=MCP#{name}, sk=CATALOG):
+      { name, url, transport, oauth(dict), enabled(bool),
+        allowed_groups(list[str]) }  # allowed_groups 비었으면 전원 허용
+
+    MCP_CATALOG_ENABLED가 꺼져 있거나 오류 시 빈 목록(안전 실패).
+    """
+    if os.environ.get("MCP_CATALOG_ENABLED", "true").lower() != "true":
         return []
+
+    table_name = os.environ.get("CONFIG_TABLE_NAME")
+    if not table_name:
+        return []
+
+    user_group_set = {g.lower() for g in user_groups}
+    servers = []
     try:
-        servers = json.loads(raw)
-        return servers if isinstance(servers, list) else []
+        table = _dynamodb.Table(table_name)
+        # sk=CATALOG 인 MCP 카탈로그 아이템만 조회
+        resp = table.query(
+            IndexName=os.environ.get("CONFIG_SK_INDEX", "sk-index"),
+            KeyConditionExpression="sk = :sk",
+            ExpressionAttributeValues={":sk": "CATALOG"},
+        )
+        items = resp.get("Items", [])
     except Exception:
-        logger.warning("MCP_SERVERS_JSON 파싱 실패", exc_info=True)
-        return []
+        # GSI가 없거나 조회 실패 시 scan 폴백 (소규모 카탈로그 가정)
+        try:
+            table = _dynamodb.Table(table_name)
+            items = table.scan(
+                FilterExpression="sk = :sk",
+                ExpressionAttributeValues={":sk": "CATALOG"},
+            ).get("Items", [])
+        except Exception:
+            logger.warning("MCP 카탈로그 조회 실패", exc_info=True)
+            return []
+
+    for item in items:
+        if not item.get("enabled", True):
+            continue
+        allowed = [str(g).lower() for g in (item.get("allowed_groups") or [])]
+        # allowed_groups가 비어있으면 전원 허용, 아니면 교집합 필요
+        if allowed and not (user_group_set & set(allowed)):
+            continue
+        entry = {
+            "name": item["name"],
+            "transport": item.get("transport", "http"),
+            "url": item["url"],
+        }
+        if item.get("oauth"):
+            entry["oauth"] = _to_plain(item["oauth"])
+        servers.append(entry)
+
+    logger.info("MCP 카탈로그: %d개 중 %d개 허용", len(items), len(servers))
+    return servers
+
+
+def _to_plain(obj):
+    """DynamoDB Decimal 등을 JSON 직렬화 가능한 형태로 변환."""
+    import decimal
+    if isinstance(obj, list):
+        return [_to_plain(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, decimal.Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    return obj
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
@@ -533,11 +608,18 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
 
 
 def _fetch_okta_userinfo(issuer: str, access_token: str) -> dict[str, Any]:
-    """Okta userinfo 호출. Okta가 토큰 서명/만료/폐기 여부를 서버 측에서 검증한다."""
-    req = urllib.request.Request(
-        f"{issuer}/oauth2/v1/userinfo",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
+    """Okta userinfo 호출. Okta가 토큰 서명/만료/폐기 여부를 서버 측에서 검증한다.
+
+    userinfo 경로는 issuer 종류에 따라 다르다:
+      - org AS   (https://{org}.okta.com)            -> {issuer}/oauth2/v1/userinfo
+      - custom AS(https://{org}.okta.com/oauth2/xxx) -> {issuer}/v1/userinfo
+    issuer에 이미 /oauth2 가 포함되어 있으면 /v1/userinfo, 아니면 /oauth2/v1/userinfo.
+    """
+    if "/oauth2/" in issuer:
+        url = f"{issuer}/v1/userinfo"
+    else:
+        url = f"{issuer}/oauth2/v1/userinfo"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode())
 

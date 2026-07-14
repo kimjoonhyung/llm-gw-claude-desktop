@@ -59,34 +59,9 @@ export class RootStack extends cdk.Stack {
     // 주력은 Claude Desktop bootstrap (desktopOidcClientId로 활성화).
     const enableWebPortal = ctx('enableWebPortal') === 'true';
 
-    // 조직 관리 MCP 커넥터: -c mcpGatewayUrl=... 지정 시 bootstrap에 포함.
-    // OAuth는 bootstrap과 동일한 Okta Native App(desktopOidcClientId) 재사용.
-    // 콜백 포트는 bootstrap(8123)과 겹치지 않게 8124.
-    const mcpGatewayUrl = ctx('mcpGatewayUrl');
-    const desktopClientId = ctx('desktopOidcClientId');
-    const oktaIssuerForMcp = ctx('oktaIssuer');
-    // AgentCore Gateway authorizer는 custom AS(/oauth2/default) 토큰(aud: api://default)을
-    // 요구하므로, MCP 커넥터도 org AS가 아닌 custom AS로 로그인해야 한다.
-    // -c mcpAuthServer=... 로 오버라이드, 기본은 {issuer}/oauth2/default.
-    const mcpAuthServer = ctx('mcpAuthServer') || `${oktaIssuerForMcp}/oauth2/default`;
-    const mcpServersJson = mcpGatewayUrl && desktopClientId && oktaIssuerForMcp
-      ? JSON.stringify([
-          {
-            name: ctx('mcpGatewayName') || 'agentcore-gateway',
-            transport: 'http',
-            url: mcpGatewayUrl,
-            oauth: {
-              clientId: desktopClientId,
-              issuer: mcpAuthServer,
-              authorizationServer: [mcpAuthServer],
-              scope: 'openid profile email offline_access',
-              appendOfflineAccess: true,
-              callbackHost: '127.0.0.1',
-              callbackPort: 8124,
-            },
-          },
-        ])
-      : '';
+    // MCP 커넥터는 이제 DDB 카탈로그(config 테이블 sk=CATALOG)에서 관리한다.
+    // 서버 추가/회수는 재배포 없이 scripts/mcp-catalog.sh 로 DDB만 수정하면 된다.
+    // (이전 -c mcpGatewayUrl 방식은 제거)
 
     const portal = new PortalStack(this, 'Portal', {
       oktaIssuer: ctx('oktaIssuer'),
@@ -98,7 +73,6 @@ export class RootStack extends cdk.Stack {
       lambdaSg: network.lambdaSg,
       albListener: gateway.listener,
       gatewayUrl: gateway.gatewayUrl,
-      mcpServersJson,
     });
 
     // Portal Lambda: LiteLLM 연동 환경변수
@@ -110,12 +84,16 @@ export class RootStack extends cdk.Stack {
     // Portal Lambda: Secrets Manager 읽기 권한 (LiteLLM Master Key)
     gateway.litellmMasterKeySecret.grantRead(portal.portalFunction);
 
-    // Portal Lambda: DynamoDB config 테이블 읽기+쓰기 권한 (Virtual Key 캐시)
+    // Portal Lambda: DynamoDB config 테이블 읽기+쓰기 권한 (Virtual Key 캐시 + MCP 카탈로그)
     // 고정 테이블 이름 + ARN 사용 (Portal <-> Monitoring 순환 참조 방지)
+    // Query는 sk-index GSI 대상 (MCP 카탈로그 조회), Scan은 GSI 미존재 시 폴백
     portal.portalFunction.addToRolePolicy(new iam.PolicyStatement({
       sid: 'ConfigTableReadWrite',
-      actions: ['dynamodb:GetItem', 'dynamodb:PutItem'],
-      resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${CONFIG_TABLE_NAME}`],
+      actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${CONFIG_TABLE_NAME}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${CONFIG_TABLE_NAME}/index/*`,
+      ],
     }));
 
     // Okta Events Lambda (자동 오프보딩): LiteLLM 연동 + 캐시 삭제 권한
