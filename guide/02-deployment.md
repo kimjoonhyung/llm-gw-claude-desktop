@@ -37,11 +37,11 @@ npx cdk deploy LlmGatewayStackV2 \
 | **`desktopOidcClientId`** | (없음) | **주력**: bootstrap용 Okta Native App Client ID. 지정 시 `/portal/bootstrap` 활성 |
 | `enableWebPortal` | `false` | **백업**: Cognito 웹 포털 활성화 |
 | `oktaClientId` / `oktaClientSecret` | (없음) | 웹 포털용 Okta Web App 자격증명 (`enableWebPortal=true`일 때만) |
-| `mcpGatewayUrl` | (없음) | AgentCore Gateway MCP 엔드포인트 → 커넥터 자동 배포 |
-| `mcpGatewayName` | `agentcore-gateway` | 커넥터 표시 이름 |
-| `mcpAuthServer` | `{issuer}/oauth2/default` | MCP OAuth authorization server |
 | `modelPrefix` | `global` | Bedrock inference profile 프리픽스 (`us`/`eu`/`apac`/`global`) |
 | `litellmImageTag` | `main-v1.83.14-stable` | LiteLLM 컨테이너 이미지 태그 |
+
+> MCP 커넥터는 배포 컨텍스트가 아니라 **DDB 카탈로그**(`scripts/mcp_catalog.py`)로 관리합니다.
+> 재배포 없이 추가/회수/그룹지정/승인정책 설정 — [05. MCP 커넥터](05-agentcore-mcp.md).
 
 ## 백업 경로(웹 포털)까지 배포
 

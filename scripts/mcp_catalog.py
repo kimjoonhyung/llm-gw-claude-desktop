@@ -13,6 +13,8 @@ Claude Desktop의 managedMcpServers로 내려준다. 서버 추가/회수는 이
   scripts/mcp_catalog.py add-external <name> <mcp-url> <issuer> [group1,group2]
       → 외부 SaaS MCP(예: Notion 호스티드 MCP). 그 서비스 자체 OAuth로 사용자가 각자 로그인.
         DCR 지원 서버는 client ID 불필요.
+  scripts/mcp_catalog.py autoapprove <name> [all|read|ask]
+      → 도구 승인 정책. all=전 도구 자동승인, read=읽기류만 자동, ask=매번 승인(기본)
   scripts/mcp_catalog.py enable <name>
   scripts/mcp_catalog.py disable <name>
   scripts/mcp_catalog.py remove <name>
@@ -22,7 +24,7 @@ Claude Desktop의 managedMcpServers로 내려준다. 서버 추가/회수는 이
 예)
   scripts/mcp_catalog.py add seoul-weather \\
     https://xxx.gateway.bedrock-agentcore.ap-northeast-2.amazonaws.com/mcp \\
-    0oa14xjdvu0Kcrclt698 https://your-org.okta.com weather-team
+    {OKTA_NATIVE_CLIENT_ID} https://your-org.okta.com weather-team
 
   allowed_groups를 비우면(마지막 인자 생략) 전원 허용.
   회수: disable(카탈로그에서 제외) 또는 remove(완전 삭제) → 다음 앱 재시작 시 반영.
@@ -111,6 +113,34 @@ def cmd_add_external(name, url, issuer, groups=""):
     print(f"외부 MCP 추가됨: {name} (issuer={iss}, groups={groups or '전원'})")
 
 
+def cmd_autoapprove(name, mode="all"):
+    """MCP 서버의 도구 승인 정책 설정.
+    mode=all  → 모든 도구 자동 승인 ({"*":"allow"})
+    mode=read → read_* 도구만 자동 승인, 나머지는 물어봄
+    mode=ask  → 정책 제거 (매번 승인 — 기본 동작으로 복귀)"""
+    if mode == "all":
+        policy = {"*": "allow"}
+    elif mode == "read":
+        policy = {"read_*": "allow", "search_*": "allow", "fetch*": "allow", "*": "ask"}
+    elif mode == "ask":
+        policy = None
+    else:
+        print("mode는 all|read|ask 중 하나"); return
+    if policy is None:
+        _table().update_item(
+            Key={"pk": f"MCP#{name}", "sk": "CATALOG"},
+            UpdateExpression="REMOVE tool_policy",
+        )
+        print(f"승인 정책 제거: {name} (매번 승인으로 복귀, 다음 앱 재시작 시 반영)")
+    else:
+        _table().update_item(
+            Key={"pk": f"MCP#{name}", "sk": "CATALOG"},
+            UpdateExpression="SET tool_policy = :p",
+            ExpressionAttributeValues={":p": policy},
+        )
+        print(f"자동 승인 설정({mode}): {name} → {policy} (다음 앱 재시작 시 반영)")
+
+
 def cmd_toggle(name, enabled):
     _table().update_item(
         Key={"pk": f"MCP#{name}", "sk": "CATALOG"},
@@ -140,6 +170,10 @@ def main(argv):
         if len(args) < 3:
             print("add-external <name> <mcp-url> <issuer> [groups]"); return 1
         cmd_add_external(*args[:4])
+    elif cmd == "autoapprove":
+        if not args:
+            print("autoapprove <name> [all|read|ask]  (기본 all)"); return 1
+        cmd_autoapprove(args[0], args[1] if len(args) > 1 else "all")
     elif cmd in ("enable", "disable"):
         if not args:
             print(f"{cmd} <name>"); return 1

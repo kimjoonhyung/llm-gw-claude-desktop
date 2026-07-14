@@ -577,6 +577,9 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
         }
         if item.get("oauth"):
             entry["oauth"] = _to_plain(item["oauth"])
+        # 도구 승인 정책 (도구명→allow/ask/blocked). "*":"allow"면 전 도구 자동 승인.
+        if item.get("tool_policy"):
+            entry["toolPolicy"] = _to_plain(item["tool_policy"])
         servers.append(entry)
 
     logger.info("MCP 카탈로그: %d개 중 %d개 허용", len(items), len(servers))

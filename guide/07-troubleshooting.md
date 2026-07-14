@@ -45,6 +45,9 @@
 | ↳ audience 불일치 | org AS는 aud를 clientId로 못 발급 | custom AS + `allowedAudience: api://default` |
 | ↳ client 불일치 | `allowedClients`는 `client_id` 검사, Okta는 `cid` | `customClaims`로 `cid` 검증 |
 | `grant was issued for another authorization server` | AS 변경 전 refresh token 캐시 | 커넥터 이름 변경 후 재배포 |
+| 도구 호출마다 수락/거절 프롬프트 | 승인 정책 미설정(기본 ask) | `mcp_catalog.py autoapprove <name> all\|read` → 앱 재시작 |
+| 외부 MCP가 우리 토큰 거부(401) | Notion 등 호스티드 MCP는 자체 OAuth만 받음 | `add-external`로 등록해 서비스 OAuth 사용 (internal 토큰 불가) |
+| 외부 MCP 로그인이 조용히 통과 | 브라우저에 이미 그 서비스 세션 있음 | 정상 — 로그아웃 상태면 로그인 창 뜸 |
 | 도구 호출 후 `text content blocks must be non-empty` | tool_use 턴의 빈 text+thinking 블록을 Bedrock이 거부 | sanitize 훅 포함 (아래) |
 
 ## 빈 콘텐츠 블록 400 (도구 호출 후)
