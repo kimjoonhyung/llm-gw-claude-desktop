@@ -1,25 +1,40 @@
 Windows Registry Editor Version 5.00
 
 ; Claude Desktop bootstrap 구성 — 전 PC 동일 파일 1개로 배포
+; Claude Desktop bootstrap configuration — deploy one identical file to every PC
 ; 게이트웨이 주소/키/모델 목록은 없음: 앱이 Okta 로그인 후 bootstrap 서버에서 자동 수령
+; No gateway address/key/model list here: the app receives them automatically from the bootstrap server after Okta sign-in
 ;
 ; 배포 전 치환할 값:
+; Values to substitute before deployment:
 ;   {ALB_DNS}            게이트웨이 ALB 도메인 (배포 출력 GatewayUrl에서 https:// 제외)
+;                        Gateway ALB domain (GatewayUrl from deploy output, without https://)
 ;   {OKTA_ISSUER}        예: https://your-org.okta.com/oauth2/default (custom AS — groups 클레임/MCP 위해 권장)
+;                        e.g. https://your-org.okta.com/oauth2/default (custom AS — recommended for the groups claim/MCP)
 ;   {NATIVE_CLIENT_ID}   Okta Native Application의 Client ID
+;                        Client ID of the Okta Native Application
 ;
-; 주의:
+; 주의: / Notes:
 ; - bootstrapOidc는 JSON 전체를 \" 이스케이프한 단일 REG_SZ 문자열 (하위 키로 쪼개지 말 것)
+;   bootstrapOidc is a single REG_SZ string with the whole JSON \"-escaped (do not split it into subkeys)
 ; - Okta Native App의 Sign-in redirect URIs에 다음 둘 다 등록:
+;   Register both of the following in the Okta Native App's Sign-in redirect URIs:
 ;     http://localhost:8123/callback
 ;     http://127.0.0.1:8123/callback
 ; - HKLM은 관리자 권한 필요. 사용자 자율 설치 시 HKEY_CURRENT_USER\SOFTWARE\Policies\Claude 사용
+;   HKLM requires admin rights. For user self-install, use HKEY_CURRENT_USER\SOFTWARE\Policies\Claude
 ; - 자체서명 인증서 사용 시 인증서 신뢰 설치가 선행되어야 함 (guide/04-claude-desktop.md)
+;   When using a self-signed certificate, the certificate must be trusted/installed first (guide/04-claude-desktop.md)
 ; - 적용 후 Claude Desktop 완전 종료 후 재실행
+;   After applying, fully quit and relaunch Claude Desktop
 ; - 탭 정책(chatTabEnabled 등)은 이 파일에 넣지 않는다:
+;   Do not put tab policies (chatTabEnabled, etc.) in this file:
 ;   bootstrap 서버 응답이 중앙에서 내려주므로 (lambda/key-portal handler 참고)
+;   the bootstrap server response delivers them centrally (see lambda/key-portal handler),
 ;   탭 정책 변경 시 서버만 수정하면 되고 PC 재배포가 필요 없다.
+;   so changing a tab policy only requires a server change — no PC redeployment.
 ;   참고: boolean 키를 직접 넣을 경우 dword가 아닌 REG_SZ 문자열 "true" 사용.
+;   Note: if you add a boolean key directly, use the REG_SZ string "true", not a dword.
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude]
 "bootstrapEnabled"="true"

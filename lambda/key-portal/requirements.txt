@@ -1,2 +1,4 @@
 # boto3는 Lambda Python 3.12 런타임에 기본 포함
+# boto3 is included by default in the Lambda Python 3.12 runtime
 # 외부 의존성 없음 (표준 라이브러리 + boto3만 사용)
+# No external dependencies (uses only the standard library + boto3)

@@ -17,7 +17,10 @@ export interface GatewayStackProps {
   albSg: ec2.ISecurityGroup;
   ecsSg: ec2.ISecurityGroup;
   dbCluster: rds.DatabaseCluster;
-  /** 비어 있으면 HTTP(80)로만 노출 (데모/테스트용). 프로덕션은 ACM 인증서 필수 */
+  /**
+   * 비어 있으면 HTTP(80)로만 노출 (데모/테스트용). 프로덕션은 ACM 인증서 필수
+   * If empty, exposed via HTTP(80) only (for demo/testing). Production requires an ACM certificate
+   */
   certificateArn: string;
   litellmImageTag: string;
   models: ModelIds;
@@ -26,6 +29,11 @@ export interface GatewayStackProps {
    * 둘 다 지정 시 LiteLLM에 enable_jwt_auth가 켜지고, Okta JWKS로 서명 검증 +
    * audience(클라이언트 ID) 고정 + 사용자 자동 생성(user_id_upsert)이 활성화된다.
    * Virtual Key 방식과 병행 동작한다.
+   *
+   * JWT auth for Claude Desktop app-native OIDC (inferenceGatewayOidc).
+   * When both are set, enable_jwt_auth is turned on in LiteLLM: signature verification via Okta JWKS +
+   * pinned audience (client ID) + automatic user creation (user_id_upsert).
+   * Works alongside the Virtual Key approach.
    */
   oktaIssuer: string;
   desktopOidcClientId: string;
@@ -36,9 +44,15 @@ export class GatewayStack extends cdk.NestedStack {
   public readonly ecsService: ecs.FargateService;
   public readonly taskDefinition: ecs.FargateTaskDefinition;
   public readonly litellmMasterKeySecret: secretsmanager.Secret;
-  /** Lambda/포털에서 사용할 게이트웨이 base URL (인증서 유무에 따라 https/http) */
+  /**
+   * Lambda/포털에서 사용할 게이트웨이 base URL (인증서 유무에 따라 https/http)
+   * Gateway base URL used by the Lambda/portal (https or http depending on certificate presence)
+   */
   public readonly gatewayUrl: string;
-  /** 포털 등 추가 라우팅 규칙을 붙일 기본 리스너 (HTTPS 또는 HTTP) */
+  /**
+   * 포털 등 추가 라우팅 규칙을 붙일 기본 리스너 (HTTPS 또는 HTTP)
+   * Default listener (HTTPS or HTTP) for attaching additional routing rules such as the portal
+   */
   public readonly listener: elbv2.ApplicationListener;
 
   constructor(scope: Construct, id: string, props: GatewayStackProps) {
@@ -76,6 +90,7 @@ export class GatewayStack extends cdk.NestedStack {
     });
 
     // Task Role: Bedrock (모든 cross-region inference profile 프리픽스 허용)
+    // Task Role: Bedrock (allows all cross-region inference profile prefixes)
     this.taskDefinition.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
       sid: 'BedrockAccess',
       actions: [
@@ -101,6 +116,9 @@ export class GatewayStack extends cdk.NestedStack {
     // 공식 이미지를 그대로 사용하고(Docker 빌드 불필요), 컨테이너 시작 시 config를 인라인 생성.
     // Claude Code가 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN(Virtual Key)로 호출하면
     // /v1/messages 요청의 모델명을 model_list로 매핑해 Bedrock으로 라우팅한다.
+    // Uses the official image as-is (no Docker build needed); the config is generated inline at container startup.
+    // When Claude Code calls with ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (Virtual Key),
+    // the model name in /v1/messages requests is mapped via model_list and routed to Bedrock.
     const { opus, sonnet, haiku } = props.models;
 
     // 주의: LiteLLM의 enable_jwt_auth(직접 JWT 인증, B안)는 Enterprise 전용 기능이다.
@@ -108,6 +126,11 @@ export class GatewayStack extends cdk.NestedStack {
     // Claude Desktop 앱 네이티브 OIDC는 bootstrap 방식(A안)으로 지원한다:
     // 포털 Lambda(/portal/bootstrap)가 Okta 토큰을 검증하고 Virtual Key를 내려주므로
     // LiteLLM 쪽 변경이 전혀 필요 없다. desktopOidcClientId는 Lambda에만 전달된다.
+    // Note: LiteLLM's enable_jwt_auth (direct JWT auth, plan B) is an Enterprise-only feature.
+    // Enabling it on the OSS version blocks all auth with an "enterprise only feature" error (verified empirically).
+    // Claude Desktop app-native OIDC is supported via the bootstrap approach (plan A):
+    // the portal Lambda (/portal/bootstrap) verifies the Okta token and hands out a Virtual Key,
+    // so no LiteLLM-side changes are needed at all. desktopOidcClientId is passed only to the Lambda.
 
     const litellmConfig = [
       'model_list:',
@@ -126,12 +149,18 @@ export class GatewayStack extends cdk.NestedStack {
       // 주의: "bedrock/*" 와일드카드를 넣으면 /v1/models가 호출 불가능한
       // 모델까지 수백 개 노출해 Claude Desktop 연결 테스트가 실패한다.
       // 지정된 모델만 노출/허용하는 것이 거버넌스 측면에서도 올바르다.
+      // Note: adding a "bedrock/*" wildcard makes /v1/models expose hundreds of models
+      // that cannot actually be invoked, causing the Claude Desktop connection test to fail.
+      // Exposing/allowing only the specified models is also the right call for governance.
       'litellm_settings:',
       '  drop_params: true',
       '  modify_params: true',
       // 도구 호출(MCP) 이력의 빈 text/thinking 블록을 제거하는 커스텀 pre-call 훅.
       // Claude Desktop이 tool_use 턴에 빈 블록을 함께 담아 Bedrock Converse가 거부하는데,
       // modify_params로는 이 조합이 정리되지 않아 훅에서 직접 제거한다.
+      // Custom pre-call hook that strips empty text/thinking blocks from tool-call (MCP) history.
+      // Claude Desktop includes empty blocks in tool_use turns, which Bedrock Converse rejects,
+      // and modify_params does not clean up this combination, so the hook removes them directly.
       '  callbacks: ["sanitize_hook.sanitize_bedrock_blocks_instance"]',
       'general_settings:',
       '  master_key: os.environ/LITELLM_MASTER_KEY',
@@ -140,13 +169,15 @@ export class GatewayStack extends cdk.NestedStack {
 
     // 커스텀 훅 소스를 인라인으로 컨테이너에 주입 (base64 → 시작 시 파일로 기록).
     // 공식 이미지를 그대로 쓰기 위해 Docker 빌드 없이 환경변수로 전달한다.
+    // Inject the custom hook source into the container inline (base64 → written to a file at startup).
+    // Passed via environment variable without a Docker build so the official image can be used as-is.
     const sanitizeHookSource = fs.readFileSync(
       path.join(__dirname, '..', '..', 'litellm', 'sanitize_hook.py'), 'utf-8');
     const sanitizeHookB64 = Buffer.from(sanitizeHookSource, 'utf-8').toString('base64');
 
     // --- Container ---
     this.taskDefinition.addContainer('litellm', {
-      // main-latest 대신 안정화(stable) 태그로 버전 고정
+      // main-latest 대신 안정화(stable) 태그로 버전 고정 / Pin the version to a stable tag instead of main-latest
       image: ecs.ContainerImage.fromRegistry(`ghcr.io/berriai/litellm:${props.litellmImageTag}`),
       portMappings: [{ containerPort: 4000, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
@@ -168,6 +199,7 @@ export class GatewayStack extends cdk.NestedStack {
       entryPoint: ['sh', '-c'],
       command: [
         // 커스텀 훅을 config(/tmp)와 같은 디렉토리에 기록 — LiteLLM은 config 경로 기준으로 콜백 모듈을 찾는다
+        // Write the custom hook into the same directory as the config (/tmp) — LiteLLM resolves callback modules relative to the config path
         'printf \'%s\' "$SANITIZE_HOOK_B64" | base64 -d > /tmp/sanitize_hook.py && ' +
         'printf \'%s\' "$LITELLM_CONFIG_CONTENT" > /tmp/config.yaml && ' +
         'export DATABASE_URL="postgresql://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}" && ' +
@@ -226,6 +258,7 @@ export class GatewayStack extends cdk.NestedStack {
       // HTTPS listener + HTTP->HTTPS redirect
       const certificate = acm.Certificate.fromCertificateArn(this, 'Certificate', props.certificateArn);
       // open: false — 인바운드 규칙은 NetworkStack의 allowedCidrs로만 관리
+      // open: false — inbound rules are managed solely via NetworkStack's allowedCidrs
       this.listener = this.alb.addListener('HttpsListener', {
         port: 443,
         protocol: elbv2.ApplicationProtocol.HTTPS,
@@ -246,7 +279,7 @@ export class GatewayStack extends cdk.NestedStack {
       });
       this.gatewayUrl = `https://${this.alb.loadBalancerDnsName}`;
     } else {
-      // 인증서 미지정: HTTP-only (데모/테스트 전용)
+      // 인증서 미지정: HTTP-only (데모/테스트 전용) / No certificate specified: HTTP-only (demo/testing only)
       cdk.Annotations.of(this).addWarning(
         'certificateArn이 지정되지 않아 ALB가 HTTP(80)로만 노출됩니다. 프로덕션에서는 -c certificateArn=... 을 지정하세요.',
       );

@@ -1,6 +1,10 @@
 """okta-events Lambda 핸들러 단위 테스트
 
 실행: cd lambda/okta-events && python3 -m unittest discover -s tests
+
+Unit tests for the okta-events Lambda handler.
+
+Run: cd lambda/okta-events && python3 -m unittest discover -s tests
 """
 
 import json
@@ -152,7 +156,8 @@ class TestRevoke(unittest.TestCase):
         with mock.patch.object(handler._dynamodb, "Table", return_value=mock_table):
             handler._revoke_user_access("bob@example.com")
         # /user/info(빈 keys) -> /key/list 폴백 없음... user/info가 성공했으므로 1회
-        self.assertEqual(mock_req.call_count, 1)  # /key/delete 호출 안 함
+        # /user/info (empty keys) -> no /key/list fallback... 1 call since user/info succeeded
+        self.assertEqual(mock_req.call_count, 1)  # /key/delete 호출 안 함 / /key/delete not called
         mock_table.delete_item.assert_called_once()
 
     @mock.patch.object(handler, "_litellm_request")

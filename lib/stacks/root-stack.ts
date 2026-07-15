@@ -26,6 +26,7 @@ export class RootStack extends cdk.Stack {
     const litellmImageTag = this.node.tryGetContext('litellmImageTag') || LITELLM_IMAGE_TAG;
 
     // ALB 인바운드 허용 CIDR 목록 (쉼표 구분: -c allowedCidrs=10.0.0.0/8,203.0.113.0/24)
+    // List of CIDRs allowed for ALB inbound (comma-separated: -c allowedCidrs=10.0.0.0/8,203.0.113.0/24)
     const allowedCidrs = ctx('allowedCidrs')
       .split(',')
       .map((c: string) => c.trim())
@@ -57,11 +58,16 @@ export class RootStack extends cdk.Stack {
 
     // 웹 포털(Cognito 기반 브라우저 키 발급)은 백업 플랜 — 기본 비활성.
     // 주력은 Claude Desktop bootstrap (desktopOidcClientId로 활성화).
+    // The web portal (Cognito-based browser key issuance) is the backup plan — disabled by default.
+    // The primary path is Claude Desktop bootstrap (enabled via desktopOidcClientId).
     const enableWebPortal = ctx('enableWebPortal') === 'true';
 
     // MCP 커넥터는 이제 DDB 카탈로그(config 테이블 sk=CATALOG)에서 관리한다.
     // 서버 추가/회수는 재배포 없이 scripts/mcp-catalog.sh 로 DDB만 수정하면 된다.
     // (이전 -c mcpGatewayUrl 방식은 제거)
+    // MCP connectors are now managed via the DDB catalog (config table, sk=CATALOG).
+    // Adding/revoking servers only requires editing DDB with scripts/mcp-catalog.sh, no redeploy.
+    // (The previous -c mcpGatewayUrl approach has been removed)
 
     const portal = new PortalStack(this, 'Portal', {
       oktaIssuer: ctx('oktaIssuer'),
@@ -75,18 +81,22 @@ export class RootStack extends cdk.Stack {
       gatewayUrl: gateway.gatewayUrl,
     });
 
-    // Portal Lambda: LiteLLM 연동 환경변수
+    // Portal Lambda: LiteLLM 연동 환경변수 / Portal Lambda: environment variables for LiteLLM integration
     portal.portalFunction.addEnvironment('CONFIG_TABLE_NAME', CONFIG_TABLE_NAME);
     portal.portalFunction.addEnvironment('GATEWAY_URL', gateway.gatewayUrl);
     portal.portalFunction.addEnvironment('LITELLM_ENDPOINT', gateway.gatewayUrl);
     portal.portalFunction.addEnvironment('LITELLM_MASTER_KEY_ARN', gateway.litellmMasterKeySecret.secretArn);
 
     // Portal Lambda: Secrets Manager 읽기 권한 (LiteLLM Master Key)
+    // Portal Lambda: Secrets Manager read permission (LiteLLM Master Key)
     gateway.litellmMasterKeySecret.grantRead(portal.portalFunction);
 
     // Portal Lambda: DynamoDB config 테이블 읽기+쓰기 권한 (Virtual Key 캐시 + MCP 카탈로그)
     // 고정 테이블 이름 + ARN 사용 (Portal <-> Monitoring 순환 참조 방지)
     // Query는 sk-index GSI 대상 (MCP 카탈로그 조회), Scan은 GSI 미존재 시 폴백
+    // Portal Lambda: DynamoDB config table read+write permission (Virtual Key cache + MCP catalog)
+    // Uses a fixed table name + ARN (avoids a Portal <-> Monitoring circular reference)
+    // Query targets the sk-index GSI (MCP catalog lookup); Scan is the fallback when the GSI is absent
     portal.portalFunction.addToRolePolicy(new iam.PolicyStatement({
       sid: 'ConfigTableReadWrite',
       actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:Scan'],
@@ -97,6 +107,7 @@ export class RootStack extends cdk.Stack {
     }));
 
     // Okta Events Lambda (자동 오프보딩): LiteLLM 연동 + 캐시 삭제 권한
+    // Okta Events Lambda (auto offboarding): LiteLLM integration + cache deletion permission
     portal.oktaEventsFunction.addEnvironment('CONFIG_TABLE_NAME', CONFIG_TABLE_NAME);
     portal.oktaEventsFunction.addEnvironment('LITELLM_ENDPOINT', gateway.gatewayUrl);
     portal.oktaEventsFunction.addEnvironment('LITELLM_MASTER_KEY_ARN', gateway.litellmMasterKeySecret.secretArn);
@@ -114,6 +125,7 @@ export class RootStack extends cdk.Stack {
     });
 
     // ECS task role: audit 테이블 쓰기 권한 (custom callback용, 고정 ARN으로 순환 참조 방지)
+    // ECS task role: audit table write permission (for the custom callback; fixed ARN avoids circular references)
     gateway.taskDefinition.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
       sid: 'AuditTableWriteAccess',
       actions: [

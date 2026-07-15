@@ -28,6 +28,26 @@ Claude Desktop의 managedMcpServers로 내려준다. 서버 추가/회수는 이
 
   allowed_groups를 비우면(마지막 인자 생략) 전원 허용.
   회수: disable(카탈로그에서 제외) 또는 remove(완전 삭제) → 다음 앱 재시작 시 반영.
+
+[English]
+MCP connector catalog management — only edits the DDB config table, no redeployment needed.
+
+The bootstrap Lambda reads this catalog on every request, filters it by the user's
+groups, and delivers it to Claude Desktop as managedMcpServers. Adding/revoking servers
+takes effect immediately via this CLI (applied to users on the next app restart).
+
+Usage (see the command list above):
+  add          → MCP authenticated via Okta (custom AS), e.g. an AgentCore gateway
+  add-external → External SaaS MCP (e.g. Notion hosted MCP). Each user signs in with
+                 that service's own OAuth. Servers supporting DCR need no client ID.
+  autoapprove  → Tool approval policy. all=auto-approve all tools, read=auto-approve
+                 read-type tools only, ask=approve every time (default)
+
+Environment variables: REGION (default ap-northeast-2), TABLE (default llm-gw-gs-config)
+
+If allowed_groups is empty (last argument omitted), everyone is allowed.
+Revocation: disable (exclude from catalog) or remove (delete completely)
+→ applied on the next app restart.
 """
 import os
 import sys
@@ -43,7 +63,7 @@ def _table():
 
 
 def cmd_list():
-    # sk-index GSI로 CATALOG 아이템 조회
+    # sk-index GSI로 CATALOG 아이템 조회 / Query CATALOG items via the sk-index GSI
     from boto3.dynamodb.conditions import Key
     try:
         items = _table().query(
@@ -88,7 +108,11 @@ def cmd_add(name, url, client, issuer, groups=""):
 
 def cmd_add_external(name, url, issuer, groups=""):
     """외부 SaaS MCP(예: Notion 호스티드 MCP) 등록.
-    해당 서비스 자체 OAuth(AS)로 사용자가 각자 로그인한다. DCR 지원 서버는 clientId 불필요."""
+    해당 서비스 자체 OAuth(AS)로 사용자가 각자 로그인한다. DCR 지원 서버는 clientId 불필요.
+
+    [English] Register an external SaaS MCP (e.g. Notion hosted MCP).
+    Each user signs in with that service's own OAuth (AS). Servers supporting DCR
+    need no clientId."""
     group_list = [g.strip() for g in groups.split(",") if g.strip()]
     iss = issuer.rstrip("/")
     _table().put_item(Item={
@@ -102,6 +126,8 @@ def cmd_add_external(name, url, issuer, groups=""):
         "oauth": {
             # 외부 서비스 AS. Claude Desktop이 DCR로 client를 동적 등록하고
             # 사용자가 그 서비스(Notion 등)에 직접 로그인한다. Okta와 무관.
+            # External service AS. Claude Desktop dynamically registers a client via DCR
+            # and the user signs in directly to that service (Notion, etc.). Unrelated to Okta.
             "issuer": iss,
             "authorizationServer": [iss],
             "scope": "",
@@ -117,7 +143,12 @@ def cmd_autoapprove(name, mode="all"):
     """MCP 서버의 도구 승인 정책 설정.
     mode=all  → 모든 도구 자동 승인 ({"*":"allow"})
     mode=read → read_* 도구만 자동 승인, 나머지는 물어봄
-    mode=ask  → 정책 제거 (매번 승인 — 기본 동작으로 복귀)"""
+    mode=ask  → 정책 제거 (매번 승인 — 기본 동작으로 복귀)
+
+    [English] Set the tool approval policy for an MCP server.
+    mode=all  → auto-approve all tools ({"*":"allow"})
+    mode=read → auto-approve read_* tools only, ask for the rest
+    mode=ask  → remove the policy (approve every time — revert to default behavior)"""
     if mode == "all":
         policy = {"*": "allow"}
     elif mode == "read":

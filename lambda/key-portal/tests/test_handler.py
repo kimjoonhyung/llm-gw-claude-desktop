@@ -1,6 +1,10 @@
 """key-portal Lambda 핸들러 단위 테스트 (표준 라이브러리 unittest만 사용)
 
 실행: python3 -m unittest discover -s lambda/key-portal/tests
+
+Unit tests for the key-portal Lambda handler (uses only the standard library unittest).
+
+Run: python3 -m unittest discover -s lambda/key-portal/tests
 """
 
 import json
@@ -33,7 +37,7 @@ with mock.patch.dict(os.environ, TEST_ENV):
     with mock.patch("boto3.resource"), mock.patch("boto3.client"):
         import handler
 
-# app client 런타임 조회를 고정값으로 대체
+# app client 런타임 조회를 고정값으로 대체 / Replace runtime app client lookup with fixed values
 handler._app_client_cache = ("test-client-id", "test-client-secret")
 
 PORTAL_HOST = "test.lambda-url.ap-northeast-2.on.aws"
@@ -46,7 +50,7 @@ def _apply_env(test):
 @_apply_env
 class TestLoginRedirect(unittest.TestCase):
     def test_root_without_code_redirects_to_okta(self):
-        # ALB 이벤트 형식 (path + cookie 헤더)
+        # ALB 이벤트 형식 (path + cookie 헤더) / ALB event format (path + cookie header)
         event = {
             "path": "/portal",
             "queryStringParameters": None,
@@ -59,9 +63,9 @@ class TestLoginRedirect(unittest.TestCase):
         self.assertIn("/oauth2/authorize", location)
         self.assertIn("identity_provider=Okta", location)
         self.assertIn("client_id=test-client-id", location)
-        # redirect_uri가 /portal 경로를 포함해야 함
+        # redirect_uri가 /portal 경로를 포함해야 함 / redirect_uri must include the /portal path
         self.assertIn("%2Fportal", location)
-        # CSRF state 쿠키가 설정되어야 함
+        # CSRF state 쿠키가 설정되어야 함 / The CSRF state cookie must be set
         self.assertTrue(resp["headers"]["Set-Cookie"].startswith(handler.STATE_COOKIE))
 
     def test_unknown_path_redirects_home(self):
@@ -86,7 +90,7 @@ class TestStateVerification(unittest.TestCase):
     def test_valid_state_roundtrip(self):
         state = "abc123"
         cookie_value = handler._sign_state(state)
-        # ALB는 cookie를 단일 헤더로 전달
+        # ALB는 cookie를 단일 헤더로 전달 / ALB passes cookies as a single header
         event = {"headers": {"cookie": f"other=1; {handler.STATE_COOKIE}={cookie_value}"}}
         self.assertTrue(handler._verify_state(event, state))
 
@@ -129,9 +133,9 @@ class TestCallback(unittest.TestCase):
 
         self.assertEqual(resp["statusCode"], 200)
         self.assertIn("sk-test-key", resp["body"])
-        # 이메일은 소문자로 정규화되어 키 발급에 사용
+        # 이메일은 소문자로 정규화되어 키 발급에 사용 / Email is normalized to lowercase for key issuance
         mock_key.assert_called_once_with("alice@example.com")
-        # 캐시 방지 헤더
+        # 캐시 방지 헤더 / Cache-prevention header
         self.assertEqual(resp["headers"]["Cache-Control"], "no-store")
 
     @mock.patch.object(handler, "_exchange_code")
@@ -158,6 +162,7 @@ class TestVirtualKeyFlow(unittest.TestCase):
     def test_cache_hit_skips_key_creation_but_ensures_user(self, mock_cached, mock_master, mock_ensure):
         self.assertEqual(handler._get_or_create_virtual_key("a@b.com"), "sk-cached")
         # 캐시 히트여도 SSO 로그인 시 LiteLLM 사용자는 항상 보장
+        # Even on a cache hit, the LiteLLM user is always ensured at SSO login
         mock_ensure.assert_called_once_with("master", "a@b.com")
 
     @mock.patch.object(handler, "_ensure_litellm_user")
@@ -186,7 +191,7 @@ class TestEnsureLitellmUser(unittest.TestCase):
 
     @mock.patch.object(handler, "_litellm_request", side_effect=__import__("urllib.error", fromlist=["HTTPError"]).HTTPError("u", 400, "exists", {}, None))
     def test_existing_user_is_noop(self, mock_req):
-        # 400(이미 존재)은 예외 없이 통과해야 함
+        # 400(이미 존재)은 예외 없이 통과해야 함 / 400 (already exists) must pass without raising
         handler._ensure_litellm_user("master", "a@b.com")
 
     @mock.patch.object(handler, "_litellm_request", side_effect=RuntimeError("down"))
@@ -195,7 +200,10 @@ class TestEnsureLitellmUser(unittest.TestCase):
 
 
 def _make_jwt(payload):
-    """서명 없는 테스트용 JWT (헤더.페이로드.가짜서명)"""
+    """서명 없는 테스트용 JWT (헤더.페이로드.가짜서명)
+
+    Unsigned test JWT (header.payload.fake-signature).
+    """
     import base64 as b64
     def enc(d):
         return b64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
@@ -247,7 +255,7 @@ class TestBootstrap(unittest.TestCase):
             ddb.Table.return_value.query.return_value = {"Items": catalog}
             resp = handler.handler(self._bootstrap_event(_make_jwt(self._valid_claims())), None)
         names = [s["name"] for s in json.loads(resp["body"])["managedMcpServers"]]
-        self.assertEqual(names, ["seoul-weather"])  # finance는 그룹 불일치로 제외
+        self.assertEqual(names, ["seoul-weather"])  # finance는 그룹 불일치로 제외 / finance is excluded due to group mismatch
 
     @mock.patch.object(handler, "_get_or_create_virtual_key", return_value="sk-x")
     @mock.patch.object(handler, "_fetch_okta_userinfo",
@@ -293,6 +301,7 @@ class TestBootstrap(unittest.TestCase):
     @mock.patch.object(handler, "_fetch_okta_userinfo", return_value={"email": "b@e.com"})
     def test_custom_as_sub_issuer_accepted(self, mock_userinfo, mock_key):
         # custom AS(/oauth2/default) 토큰도 허용 (groups 클레임/MCP 경로)
+        # Custom AS (/oauth2/default) tokens are also allowed (groups claim / MCP path)
         token = _make_jwt(self._valid_claims(iss="https://test-org.okta.com/oauth2/default"))
         resp = handler.handler(self._bootstrap_event(token), None)
         self.assertEqual(resp["statusCode"], 200)

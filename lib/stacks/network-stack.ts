@@ -7,6 +7,9 @@ export interface NetworkStackProps {
   /**
    * ALB 인바운드(80/443)를 허용할 CIDR 목록.
    * 비어 있으면 0.0.0.0/0 (전체 개방, 경고 출력).
+   *
+   * List of CIDRs allowed for ALB inbound (80/443).
+   * If empty, 0.0.0.0/0 (fully open, warning emitted).
    */
   allowedCidrs: string[];
 }
@@ -18,7 +21,7 @@ export class NetworkStack extends cdk.NestedStack {
   public readonly rdsSg: ec2.SecurityGroup;
   public readonly lambdaSg: ec2.SecurityGroup;
   public readonly vpcEndpointSg: ec2.SecurityGroup;
-  /** NAT Gateway 고정 EIP (VPC 내부發 아웃바운드 소스 IP) */
+  /** NAT Gateway 고정 EIP (VPC 내부發 아웃바운드 소스 IP) / Fixed NAT Gateway EIP (source IP for outbound traffic originating inside the VPC) */
   public readonly natEipPublicIp: string;
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
@@ -27,6 +30,9 @@ export class NetworkStack extends cdk.NestedStack {
     // NAT Gateway EIP를 직접 할당해 주소를 고정한다.
     // ALB를 CIDR로 제한해도 VPC 내부(포털 Lambda)發 트래픽은
     // NAT EIP를 소스로 ALB에 도달하므로, 이 EIP를 허용 목록에 추가할 수 있다.
+    // Allocate the NAT Gateway EIP explicitly to pin its address.
+    // Even when the ALB is CIDR-restricted, traffic originating inside the VPC (portal Lambda)
+    // reaches the ALB with the NAT EIP as its source, so this EIP can be added to the allowlist.
     const natEip = new ec2.CfnEIP(this, 'NatEip', {
       tags: [{ key: 'Name', value: `${PROJECT_NAME}-nat-eip` }],
     });
@@ -41,6 +47,7 @@ export class NetworkStack extends cdk.NestedStack {
         eipAllocationIds: [natEip.attrAllocationId],
       }),
       // 이 계정의 ap-northeast-2a는 NAT GW가 AZ당 한도(5)에 도달해 있어 두 번째 AZ에 배치
+      // In this account, ap-northeast-2a has hit the per-AZ NAT GW limit (5), so it is placed in the second AZ
       natGatewaySubnets: {
         subnetType: ec2.SubnetType.PUBLIC,
         availabilityZones: [cdk.Stack.of(this).availabilityZones[1]],
@@ -67,6 +74,7 @@ export class NetworkStack extends cdk.NestedStack {
     // --- Security Groups ---
 
     // ALB: inbound 80/443 - allowedCidrs가 지정되면 해당 CIDR + NAT EIP만 허용
+    // ALB: inbound 80/443 - when allowedCidrs is set, only those CIDRs + the NAT EIP are allowed
     this.albSg = new ec2.SecurityGroup(this, 'AlbSg', {
       vpc: this.vpc,
       securityGroupName: `${PROJECT_NAME}-alb-sg`,
@@ -87,7 +95,7 @@ export class NetworkStack extends cdk.NestedStack {
           `Allow HTTPS from ${cidr}`,
         );
       }
-      // 포털 Lambda(VPC 내부) -> NAT GW -> ALB 경로 허용
+      // 포털 Lambda(VPC 내부) -> NAT GW -> ALB 경로 허용 / Allow the portal Lambda (inside the VPC) -> NAT GW -> ALB path
       const natCidr = `${natEip.attrPublicIp}/32`;
       this.albSg.addIngressRule(
         ec2.Peer.ipv4(natCidr),
@@ -129,7 +137,7 @@ export class NetworkStack extends cdk.NestedStack {
       'Allow LiteLLM traffic from ALB',
     );
 
-    // Lambda (키 포털): outbound only
+    // Lambda (키 포털): outbound only / Lambda (key portal): outbound only
     this.lambdaSg = new ec2.SecurityGroup(this, 'LambdaSg', {
       vpc: this.vpc,
       securityGroupName: `${PROJECT_NAME}-lambda-sg`,

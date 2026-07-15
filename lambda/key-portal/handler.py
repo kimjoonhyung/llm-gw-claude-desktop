@@ -13,6 +13,19 @@ LiteLLM Virtual Key를 발급받는 포털. 기존 블루프린트의 apiKeyHelp
 
 Virtual Key는 이메일로 전송하지 않고 인증된 HTTPS 세션 화면에만 표시한다.
 (이메일은 평문 저장/전달 경로가 생기므로, 인증 화면 표시가 더 안전하다)
+
+A portal where regular users obtain a LiteLLM Virtual Key from the browser with
+only an Okta login, without the AWS CLI. This is a cloud (Lambda) port of the
+existing blueprint's apiKeyHelper (local script) logic.
+
+Flow:
+1. GET /            -> Redirect to Cognito Hosted UI (Okta OIDC federation) (issues CSRF state cookie)
+2. GET /?code=...   -> Verify state -> Exchange Cognito tokens -> Confirm user via /oauth2/userInfo
+3. Look up DynamoDB cache by email -> If absent, create a Virtual Key via LiteLLM /key/generate
+4. Display the Virtual Key + Claude Code/Desktop setup guide on the authenticated session page
+
+The Virtual Key is never emailed; it is shown only on the authenticated HTTPS session page.
+(Email creates plaintext storage/delivery paths, so showing it on an authenticated page is safer.)
 """
 
 import base64
@@ -49,6 +62,12 @@ def _get_app_client() -> tuple[str, str]:
 
     CloudFormation에서 Lambda 환경변수 <- App Client <- callback URL(Function URL) <- Lambda
     순환이 생기므로, 이름으로 client를 찾아 자격증명을 가져온다. 모듈 레벨 캐싱.
+
+    Look up the Cognito App Client ID/Secret at runtime (avoids a CDK circular reference).
+
+    In CloudFormation, a cycle forms: Lambda env vars <- App Client <- callback URL
+    (Function URL) <- Lambda, so we find the client by name and fetch its credentials.
+    Cached at module level.
     """
     global _app_client_cache
     if _app_client_cache is not None:
@@ -82,6 +101,12 @@ def _portal_url(event: dict[str, Any]) -> str:
     """요청의 Host 헤더로 포털 자신의 URL을 구성한다 (환경변수 순환 참조 회피).
 
     ALB 뒤에 있으므로 경로는 /portal 고정, 스킴은 X-Forwarded-Proto를 따른다.
+
+    Build the portal's own URL from the request's Host header (avoids an env var
+    circular reference).
+
+    Since we are behind an ALB, the path is fixed to /portal and the scheme follows
+    X-Forwarded-Proto.
     """
     headers = event.get("headers") or {}
     host = headers.get("host") or event.get("requestContext", {}).get("domainName", "")
@@ -90,12 +115,18 @@ def _portal_url(event: dict[str, Any]) -> str:
 
 
 def _get_path(event: dict[str, Any]) -> str:
-    """Function URL(v2: rawPath)과 ALB(path) 이벤트 모두 지원."""
+    """Function URL(v2: rawPath)과 ALB(path) 이벤트 모두 지원.
+
+    Supports both Function URL (v2: rawPath) and ALB (path) events.
+    """
     return event.get("rawPath") or event.get("path") or "/"
 
 
 def _get_cookies(event: dict[str, Any]) -> list[str]:
-    """Function URL(cookies 배열)과 ALB(cookie 헤더) 이벤트 모두 지원."""
+    """Function URL(cookies 배열)과 ALB(cookie 헤더) 이벤트 모두 지원.
+
+    Supports both Function URL (cookies array) and ALB (cookie header) events.
+    """
     if event.get("cookies"):
         return event["cookies"]
     cookie_header = (event.get("headers") or {}).get("cookie", "")
@@ -103,11 +134,14 @@ def _get_cookies(event: dict[str, Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# 엔트리포인트
+# 엔트리포인트 / Entry point
 # ---------------------------------------------------------------------------
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Lambda Function URL (payload v2.0) 핸들러"""
+    """Lambda Function URL (payload v2.0) 핸들러
+
+    Lambda Function URL (payload v2.0) handler.
+    """
     try:
         path = _get_path(event)
         params = event.get("queryStringParameters") or {}
@@ -116,10 +150,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _text_response(200, "ok")
 
         # 게이트웨이 인증서 다운로드 (인증서는 TLS 핸드셰이크로 공개되는 정보라 인증 불필요)
+        # Gateway certificate download (the cert is public via the TLS handshake, so no auth needed)
         if path == "/portal/cert":
             return _cert_response()
 
         # Claude Desktop bootstrap: Okta 토큰 검증 후 사용자별 설정 JSON 반환
+        # Claude Desktop bootstrap: verify the Okta token, then return per-user config JSON
         if path == "/portal/bootstrap":
             return _handle_bootstrap(event)
 
@@ -127,6 +163,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _redirect("/portal")
 
         # 웹 포털(브라우저 키 발급)은 백업 플랜 — 비활성 시 안내만 표시
+        # The web portal (browser key issuance) is a backup plan — when disabled, show info only
         if not os.environ.get("WEB_PORTAL_ENABLED"):
             return _html_response(200, _bootstrap_info_page())
 
@@ -143,10 +180,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # OAuth 로그인 (Cognito Hosted UI + Okta OIDC)
+# OAuth login (Cognito Hosted UI + Okta OIDC)
 # ---------------------------------------------------------------------------
 
 def _start_login(event: dict[str, Any]) -> dict[str, Any]:
-    """Cognito Hosted UI로 리다이렉트한다. Okta IdP가 설정된 경우 바로 Okta 로그인으로 이동."""
+    """Cognito Hosted UI로 리다이렉트한다. Okta IdP가 설정된 경우 바로 Okta 로그인으로 이동.
+
+    Redirect to the Cognito Hosted UI. If an Okta IdP is configured, go straight to
+    the Okta login.
+    """
     client_id, _ = _get_app_client()
     state = pysecrets.token_urlsafe(24)
     query = {
@@ -172,13 +214,18 @@ def _start_login(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_callback(event: dict[str, Any], code: str, state: str) -> dict[str, Any]:
-    """인증 코드 콜백: state 검증 -> 토큰 교환 -> 사용자 확인 -> Virtual Key 발급/표시"""
-    # 1. CSRF state 검증
+    """인증 코드 콜백: state 검증 -> 토큰 교환 -> 사용자 확인 -> Virtual Key 발급/표시
+
+    Authorization code callback: verify state -> exchange tokens -> confirm user ->
+    issue/display Virtual Key.
+    """
+    # 1. CSRF state 검증 / Verify CSRF state
     if not _verify_state(event, state):
         logger.warning("OAuth state 검증 실패")
         return _redirect("/portal")
 
     # 2. 인증 코드 -> 토큰 교환 (client secret 포함, 서버 간 통신)
+    # 2. Authorization code -> token exchange (includes client secret, server-to-server)
     try:
         tokens = _exchange_code(code, _portal_url(event))
     except urllib.error.HTTPError as e:
@@ -186,6 +233,7 @@ def _handle_callback(event: dict[str, Any], code: str, state: str) -> dict[str, 
         return _redirect("/portal")
 
     # 3. Cognito userInfo로 액세스 토큰 검증 및 사용자 확인
+    # 3. Validate the access token and confirm the user via Cognito userInfo
     userinfo = _fetch_userinfo(tokens["access_token"])
     email = (userinfo.get("email") or "").strip().lower()
     if not email:
@@ -195,9 +243,10 @@ def _handle_callback(event: dict[str, Any], code: str, state: str) -> dict[str, 
     logger.info("포털 로그인: email=%s", email)
 
     # 4. Virtual Key 조회/발급 (기존 apiKeyHelper의 클라우드 버전)
+    # 4. Look up/issue the Virtual Key (cloud version of the existing apiKeyHelper)
     virtual_key = _get_or_create_virtual_key(email)
 
-    # 5. 인증된 세션 화면에 표시
+    # 5. 인증된 세션 화면에 표시 / Display on the authenticated session page
     return {
         "statusCode": 200,
         "headers": {
@@ -210,7 +259,10 @@ def _handle_callback(event: dict[str, Any], code: str, state: str) -> dict[str, 
 
 
 def _exchange_code(code: str, redirect_uri: str) -> dict[str, Any]:
-    """Cognito /oauth2/token에서 인증 코드를 토큰으로 교환한다."""
+    """Cognito /oauth2/token에서 인증 코드를 토큰으로 교환한다.
+
+    Exchange the authorization code for tokens at Cognito /oauth2/token.
+    """
     client_id, client_secret = _get_app_client()
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
@@ -235,7 +287,10 @@ def _exchange_code(code: str, redirect_uri: str) -> dict[str, Any]:
 
 
 def _fetch_userinfo(access_token: str) -> dict[str, Any]:
-    """Cognito /oauth2/userInfo 호출. Cognito가 토큰 유효성을 서버 측에서 검증한다."""
+    """Cognito /oauth2/userInfo 호출. Cognito가 토큰 유효성을 서버 측에서 검증한다.
+
+    Call Cognito /oauth2/userInfo. Cognito validates the token server-side.
+    """
     req = urllib.request.Request(
         f"{os.environ['COGNITO_DOMAIN']}/oauth2/userInfo",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -245,11 +300,12 @@ def _fetch_userinfo(access_token: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# CSRF state (HMAC 서명 쿠키)
+# CSRF state (HMAC 서명 쿠키) / CSRF state (HMAC-signed cookie)
 # ---------------------------------------------------------------------------
 
 def _state_secret() -> bytes:
     # client secret을 HMAC 키로 재사용 (별도 시크릿 불필요)
+    # Reuse the client secret as the HMAC key (no separate secret needed)
     _, client_secret = _get_app_client()
     return client_secret.encode()
 
@@ -271,15 +327,21 @@ def _verify_state(event: dict[str, Any], state: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Virtual Key 조회/발급
+# Virtual Key 조회/발급 / Virtual Key lookup/issuance
 # ---------------------------------------------------------------------------
 
 def _get_or_create_virtual_key(email: str) -> str:
-    """LiteLLM 사용자 보장 -> DynamoDB 캐시 조회 -> 없으면 키 생성 -> 캐시 저장"""
+    """LiteLLM 사용자 보장 -> DynamoDB 캐시 조회 -> 없으면 키 생성 -> 캐시 저장
+
+    Ensure the LiteLLM user -> check the DynamoDB cache -> create a key if absent ->
+    store it in the cache.
+    """
     master_key = _get_master_key()
 
     # SSO 로그인 시 LiteLLM Internal User를 항상 보장한다 (이미 있으면 no-op).
     # 사용자 단위 사용량 추적/예산이 키가 아닌 사용자 레벨에서도 동작하게 한다.
+    # Always ensure a LiteLLM Internal User on SSO login (no-op if it already exists).
+    # This makes per-user usage tracking/budgets work at the user level, not just the key level.
     _ensure_litellm_user(master_key, email)
 
     cached = _get_cached_key(email)
@@ -291,7 +353,7 @@ def _get_or_create_virtual_key(email: str) -> str:
         virtual_key = _create_virtual_key(master_key, email)
     except urllib.error.HTTPError as e:
         if e.code == 400:
-            # key_alias 충돌 -> 기존 키 복구
+            # key_alias 충돌 -> 기존 키 복구 / key_alias conflict -> recover the existing key
             logger.info("alias 충돌 감지, 기존 키 복구 시도: user=%s", email)
             virtual_key = _recover_existing_key(master_key, email)
         else:
@@ -307,6 +369,12 @@ def _ensure_litellm_user(master_key: str, email: str) -> None:
 
     /user/new는 이미 존재하는 user_id면 400을 반환하므로 무시한다.
     사용자 생성 실패가 키 발급을 막지 않도록 예외는 모두 로깅 후 삼킨다.
+
+    Create an Internal User in LiteLLM (idempotent).
+
+    /user/new returns 400 for an already-existing user_id, so that is ignored.
+    All exceptions are logged and swallowed so that a user-creation failure
+    never blocks key issuance.
     """
     default_model = os.environ.get("DEFAULT_MODEL", "")
     body = {
@@ -323,6 +391,7 @@ def _ensure_litellm_user(master_key: str, email: str) -> None:
         logger.info("LiteLLM 사용자 생성: user=%s", email)
     except urllib.error.HTTPError as e:
         # 400/409 모두 "이미 존재" 응답 (LiteLLM 버전에 따라 다름)
+        # Both 400 and 409 mean "already exists" (varies by LiteLLM version)
         if e.code in (400, 409):
             logger.info("LiteLLM 사용자 이미 존재: user=%s", email)
         else:
@@ -365,7 +434,10 @@ def _get_master_key() -> str:
 
 
 def _create_virtual_key(master_key: str, email: str) -> str:
-    """LiteLLM /key/generate로 사용자별 예산이 설정된 Virtual Key를 생성한다."""
+    """LiteLLM /key/generate로 사용자별 예산이 설정된 Virtual Key를 생성한다.
+
+    Create a Virtual Key with a per-user budget via LiteLLM /key/generate.
+    """
     body = {
         "key_alias": f"okta-{email}",
         "user_id": email,
@@ -378,7 +450,10 @@ def _create_virtual_key(master_key: str, email: str) -> str:
 
 
 def _recover_existing_key(master_key: str, email: str) -> str:
-    """/user/info에서 okta- prefix 키를 찾아 기존 Virtual Key를 복구한다."""
+    """/user/info에서 okta- prefix 키를 찾아 기존 Virtual Key를 복구한다.
+
+    Recover the existing Virtual Key by finding an okta- prefixed key via /user/info.
+    """
     quoted = urllib.parse.quote(email)
     response = _litellm_request("GET", f"/user/info?user_id={quoted}", master_key)
     for key_info in response.get("keys", []):
@@ -396,6 +471,7 @@ def _litellm_request(method: str, path: str, master_key: str, body: dict | None 
     data = json.dumps(body).encode() if body else None
 
     # ALB가 자체서명 인증서를 쓰는 경우를 위해 내부 호출은 TLS 검증 생략
+    # Skip TLS verification for internal calls, in case the ALB uses a self-signed certificate
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -416,6 +492,7 @@ def _litellm_request(method: str, path: str, master_key: str, body: dict | None 
 
 # ---------------------------------------------------------------------------
 # Claude Desktop Bootstrap (앱 네이티브 OIDC — 수동 키 입력 제거)
+# Claude Desktop Bootstrap (app-native OIDC — removes manual key entry)
 # ---------------------------------------------------------------------------
 #
 # 앱이 bootstrapOidc(Okta PKCE)로 로그인 후, 액세스 토큰을 Bearer로 붙여
@@ -427,6 +504,18 @@ def _litellm_request(method: str, path: str, master_key: str, body: dict | None 
 #    exp 미경과인지 확인 (서명 검증 전 필터링)
 # 2. Okta /oauth2/v1/userinfo 호출 — Okta가 서버 측에서 서명/유효성을
 #    최종 검증하고 email 클레임을 반환 (Cognito 콜백과 동일한 패턴)
+#
+# The app logs in via bootstrapOidc (Okta PKCE), then calls GET /portal/bootstrap
+# with the access token as a Bearer header. We verify the token and return a
+# config JSON containing that user's Virtual Key — the response becomes the app's
+# effective configuration.
+#
+# Token verification (2 steps):
+# 1. JWT payload pre-check — confirm iss is our Okta tenant, cid is our Native App,
+#    and exp has not passed (filtering before signature verification)
+# 2. Call Okta /oauth2/v1/userinfo — Okta performs the final server-side
+#    signature/validity verification and returns the email claim (same pattern as
+#    the Cognito callback)
 
 def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
     okta_issuer = os.environ.get("OKTA_ISSUER", "")
@@ -440,12 +529,14 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
         return _json_response(401, {"error": "missing bearer token"})
     token = auth[len("Bearer "):].strip()
 
-    # 1. 페이로드 사전 검사
+    # 1. 페이로드 사전 검사 / Payload pre-check
     claims = _decode_jwt_payload(token)
     if claims is None:
         return _json_response(401, {"error": "malformed token"})
     # issuer 허용: org AS(OKTA_ISSUER) 또는 그 하위 custom AS(/oauth2/*).
     # groups 클레임/MCP를 위해 custom AS(/oauth2/default)로 로그인하므로 둘 다 받는다.
+    # Allowed issuers: the org AS (OKTA_ISSUER) or a custom AS under it (/oauth2/*).
+    # Login uses the custom AS (/oauth2/default) for the groups claim/MCP, so both are accepted.
     token_iss = claims.get("iss") or ""
     if not (token_iss == okta_issuer or token_iss.startswith(okta_issuer + "/oauth2/")):
         logger.warning("bootstrap: issuer 불일치: %s", token_iss)
@@ -458,6 +549,7 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
         return _json_response(401, {"error": "token expired"})
 
     # 2. Okta 서버 측 최종 검증 + email 획득 (토큰 발급 issuer의 userinfo 사용)
+    # 2. Final server-side verification by Okta + obtain email (use the issuing issuer's userinfo)
     try:
         userinfo = _fetch_okta_userinfo(token_iss, token)
     except urllib.error.HTTPError as e:
@@ -470,12 +562,15 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
 
     # Okta 그룹 (MCP 커넥터 선별용). access token 클레임을 우선 사용하고
     # (groups를 Access Token에만 넣는 Okta 설정이 흔함) 없으면 userinfo로 폴백.
+    # Okta groups (for selecting MCP connectors). Prefer the access token claims
+    # (Okta setups that put groups only in the Access Token are common), falling back to userinfo.
     user_groups = _extract_groups(claims) or _extract_groups(userinfo)
 
     logger.info("bootstrap 요청: email=%s groups=%s", email, user_groups)
     virtual_key = _get_or_create_virtual_key(email)
 
     # 응답 JSON = Claude Desktop의 유효 설정 (managed config 스키마)
+    # Response JSON = Claude Desktop's effective configuration (managed config schema)
     gateway_url = os.environ.get("GATEWAY_URL", "").rstrip("/")
     config = {
         "inferenceProvider": "gateway",
@@ -492,6 +587,10 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
         # 최대 개방 프로파일: 탭 전부 + 확장/로컬 MCP/자동 모드/파일 분석 허용.
         # 제한 키(disabledBuiltinTools, allowedWorkspaceFolders,
         # coworkEgressAllowedHosts 등)는 아예 넣지 않는다 — 미설정 = 무제한.
+        # --- Feature policy (centrally managed via bootstrap; booleans as strings too) ---
+        # Maximally open profile: all tabs + extensions/local MCP/auto mode/file analysis allowed.
+        # Restriction keys (disabledBuiltinTools, allowedWorkspaceFolders,
+        # coworkEgressAllowedHosts, etc.) are omitted entirely — unset = unrestricted.
         "chatTabEnabled": "true",
         "coworkTabEnabled": "true",
         "isClaudeCodeForDesktopEnabled": "true",
@@ -506,6 +605,11 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
     # DDB 카탈로그에서 enabled=true인 서버 중, 사용자 그룹으로 허용된 것만 골라 넣는다.
     # 사용자가 URL을 입력하지 않아도 커넥터 목록에 자동으로 뜨고, 카탈로그 변경 시
     # 재배포 없이 DDB만 수정하면 다음 앱 재시작에 반영된다.
+    # --- Organization-managed MCP connectors (AgentCore Gateway, etc.) ---
+    # From the DDB catalog, include only servers with enabled=true that are allowed
+    # for the user's groups. They appear automatically in the connector list without
+    # the user entering a URL, and catalog changes only require editing DDB — no
+    # redeploy — taking effect on the next app restart.
     managed_mcp = _managed_mcp_servers(user_groups)
     if managed_mcp:
         config["managedMcpServers"] = managed_mcp
@@ -514,7 +618,11 @@ def _handle_bootstrap(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_groups(userinfo: dict[str, Any]) -> list[str]:
-    """userinfo에서 그룹 목록을 추출한다. 클레임 이름은 IdP 설정에 따라 다를 수 있어 관대하게 처리."""
+    """userinfo에서 그룹 목록을 추출한다. 클레임 이름은 IdP 설정에 따라 다를 수 있어 관대하게 처리.
+
+    Extract the group list from userinfo. Claim names vary by IdP configuration,
+    so handle them leniently.
+    """
     for key in ("groups", "groupMemberships", "roles"):
         val = userinfo.get(key)
         if isinstance(val, list):
@@ -532,6 +640,14 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
         allowed_groups(list[str]) }  # allowed_groups 비었으면 전원 허용
 
     MCP_CATALOG_ENABLED가 꺼져 있거나 오류 시 빈 목록(안전 실패).
+
+    Query the MCP catalog in the DDB config table and filter by groups.
+
+    Catalog item format (pk=MCP#{name}, sk=CATALOG):
+      { name, url, transport, oauth(dict), enabled(bool),
+        allowed_groups(list[str]) }  # empty allowed_groups means everyone is allowed
+
+    Returns an empty list if MCP_CATALOG_ENABLED is off or on error (fail-safe).
     """
     if os.environ.get("MCP_CATALOG_ENABLED", "true").lower() != "true":
         return []
@@ -544,7 +660,7 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
     servers = []
     try:
         table = _dynamodb.Table(table_name)
-        # sk=CATALOG 인 MCP 카탈로그 아이템만 조회
+        # sk=CATALOG 인 MCP 카탈로그 아이템만 조회 / Query only MCP catalog items with sk=CATALOG
         resp = table.query(
             IndexName=os.environ.get("CONFIG_SK_INDEX", "sk-index"),
             KeyConditionExpression="sk = :sk",
@@ -553,6 +669,7 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
         items = resp.get("Items", [])
     except Exception:
         # GSI가 없거나 조회 실패 시 scan 폴백 (소규모 카탈로그 가정)
+        # Fall back to scan when the GSI is missing or the query fails (assumes a small catalog)
         try:
             table = _dynamodb.Table(table_name)
             items = table.scan(
@@ -568,6 +685,7 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
             continue
         allowed = [str(g).lower() for g in (item.get("allowed_groups") or [])]
         # allowed_groups가 비어있으면 전원 허용, 아니면 교집합 필요
+        # Empty allowed_groups allows everyone; otherwise an intersection is required
         if allowed and not (user_group_set & set(allowed)):
             continue
         entry = {
@@ -578,6 +696,7 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
         if item.get("oauth"):
             entry["oauth"] = _to_plain(item["oauth"])
         # 도구 승인 정책 (도구명→allow/ask/blocked). "*":"allow"면 전 도구 자동 승인.
+        # Tool approval policy (tool name -> allow/ask/blocked). "*":"allow" auto-approves all tools.
         if item.get("tool_policy"):
             entry["toolPolicy"] = _to_plain(item["tool_policy"])
         servers.append(entry)
@@ -587,7 +706,10 @@ def _managed_mcp_servers(user_groups: list[str]) -> list:
 
 
 def _to_plain(obj):
-    """DynamoDB Decimal 등을 JSON 직렬화 가능한 형태로 변환."""
+    """DynamoDB Decimal 등을 JSON 직렬화 가능한 형태로 변환.
+
+    Convert DynamoDB Decimal and the like into JSON-serializable forms.
+    """
     import decimal
     if isinstance(obj, list):
         return [_to_plain(x) for x in obj]
@@ -599,7 +721,11 @@ def _to_plain(obj):
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
-    """JWT 페이로드를 서명 검증 없이 디코딩한다 (사전 필터링용 — 최종 검증은 userinfo)."""
+    """JWT 페이로드를 서명 검증 없이 디코딩한다 (사전 필터링용 — 최종 검증은 userinfo).
+
+    Decode the JWT payload without signature verification (for pre-filtering —
+    final verification is done by userinfo).
+    """
     try:
         parts = token.split(".")
         if len(parts) != 3:
@@ -617,6 +743,13 @@ def _fetch_okta_userinfo(issuer: str, access_token: str) -> dict[str, Any]:
       - org AS   (https://{org}.okta.com)            -> {issuer}/oauth2/v1/userinfo
       - custom AS(https://{org}.okta.com/oauth2/xxx) -> {issuer}/v1/userinfo
     issuer에 이미 /oauth2 가 포함되어 있으면 /v1/userinfo, 아니면 /oauth2/v1/userinfo.
+
+    Call Okta userinfo. Okta verifies the token's signature/expiry/revocation server-side.
+
+    The userinfo path depends on the issuer type:
+      - org AS    (https://{org}.okta.com)            -> {issuer}/oauth2/v1/userinfo
+      - custom AS (https://{org}.okta.com/oauth2/xxx) -> {issuer}/v1/userinfo
+    If the issuer already contains /oauth2, use /v1/userinfo; otherwise /oauth2/v1/userinfo.
     """
     if "/oauth2/" in issuer:
         url = f"{issuer}/v1/userinfo"
@@ -641,11 +774,14 @@ def _json_response(status_code: int, body: dict) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 게이트웨이 인증서 다운로드
+# 게이트웨이 인증서 다운로드 / Gateway certificate download
 # ---------------------------------------------------------------------------
 
 def _fetch_gateway_cert() -> str:
-    """게이트웨이(ALB)가 서빙 중인 TLS 인증서를 PEM으로 가져온다. 모듈 레벨 캐싱."""
+    """게이트웨이(ALB)가 서빙 중인 TLS 인증서를 PEM으로 가져온다. 모듈 레벨 캐싱.
+
+    Fetch the TLS certificate the gateway (ALB) is serving, as PEM. Cached at module level.
+    """
     global _gateway_cert_cache
     if _gateway_cert_cache is None:
         gateway_url = os.environ["GATEWAY_URL"]
@@ -657,7 +793,10 @@ def _fetch_gateway_cert() -> str:
 
 
 def _cert_response() -> dict[str, Any]:
-    """게이트웨이 인증서를 .crt 파일로 다운로드시킨다."""
+    """게이트웨이 인증서를 .crt 파일로 다운로드시킨다.
+
+    Serve the gateway certificate as a downloadable .crt file.
+    """
     try:
         pem = _fetch_gateway_cert()
     except Exception:
@@ -675,7 +814,7 @@ def _cert_response() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# HTML 렌더링
+# HTML 렌더링 / HTML rendering
 # ---------------------------------------------------------------------------
 
 def _escape(value: str) -> str:
@@ -705,12 +844,13 @@ def _key_page(display_name: str, email: str, virtual_key: str) -> str:
 
     cert_url = f"{gateway_url}/portal/cert"
     # 다운로드 + macOS 시스템 신뢰 등록을 한 줄로
+    # Download + macOS system trust registration in one line
     mac_install_cmd = (
         f"curl -sk {cert_url} -o ~/llm-gateway.crt && "
         "sudo security add-trusted-cert -d -r trustRoot "
         "-k /Library/Keychains/System.keychain ~/llm-gateway.crt"
     )
-    # Windows (관리자 PowerShell)
+    # Windows (관리자 PowerShell) / Windows (administrator PowerShell)
     win_install_cmd = (
         f"curl.exe -sk {cert_url} -o $env:USERPROFILE\\llm-gateway.crt; "
         "Import-Certificate -FilePath $env:USERPROFILE\\llm-gateway.crt "
@@ -797,7 +937,11 @@ function copyText(id) {{
 
 
 def _bootstrap_info_page() -> str:
-    """웹 포털 비활성 시 안내 페이지 — 주력 경로(Claude Desktop 자동 설정)를 안내한다."""
+    """웹 포털 비활성 시 안내 페이지 — 주력 경로(Claude Desktop 자동 설정)를 안내한다.
+
+    Info page shown when the web portal is disabled — points users to the primary
+    path (Claude Desktop automatic configuration).
+    """
     return """<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="robots" content="noindex">
 <title>LLM Gateway</title></head>
@@ -820,7 +964,7 @@ def _error_page(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 응답 헬퍼
+# 응답 헬퍼 / Response helpers
 # ---------------------------------------------------------------------------
 
 def _redirect(location: str) -> dict[str, Any]:
