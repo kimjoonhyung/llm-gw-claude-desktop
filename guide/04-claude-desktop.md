@@ -1,3 +1,5 @@
+> 🇰🇷 한국어 | 🇺🇸 [English](en/04-claude-desktop.md)
+
 # 04. Claude Desktop 배포
 
 주력은 **Bootstrap 방식** — 앱이 Okta 로그인 후 서버에서 설정을 자동 수신합니다.

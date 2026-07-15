@@ -1,3 +1,5 @@
+> 🇰🇷 한국어 | 🇺🇸 [English](en/01-architecture.md)
+
 # 01. 아키텍처
 
 ## 전체 구성

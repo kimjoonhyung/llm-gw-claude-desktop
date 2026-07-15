@@ -1,3 +1,5 @@
+> 🇰🇷 한국어 | 🇺🇸 [English](en/05-agentcore-mcp.md)
+
 # 05. MCP 커넥터 (AgentCore 에이전트 · 외부 SaaS)
 
 Claude Desktop에 **조직 관리 MCP 커넥터**를 배포합니다. bootstrap 응답의

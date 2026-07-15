@@ -1,3 +1,5 @@
+> 🇰🇷 한국어 | 🇺🇸 [English](en/README.md)
+
 # Claude Desktop × LLM Gateway 구축 가이드
 
 Okta SSO만으로 일반 사용자가 Claude Desktop을 사내 LLM 게이트웨이(Amazon Bedrock)에

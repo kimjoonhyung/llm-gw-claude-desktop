@@ -1,3 +1,5 @@
+> 🇰🇷 한국어 | 🇺🇸 [English](en/02-deployment.md)
+
 # 02. 배포
 
 ## 사전 요구사항
